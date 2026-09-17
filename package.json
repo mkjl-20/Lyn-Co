@@ -1,0 +1,16 @@
+{
+  "name": "lynq",
+  "private": true,
+  "version": "0.0.0",
+  "description": "LynQ — Lyn & Co Salon and Spa queue management system",
+  "scripts": {
+    "dev": "concurrently -n web,api -c cyan,magenta \"npm run dev --prefix ql-cf\" \"npm run dev --prefix ps-sb/api\"",
+    "dev:web": "npm run dev --prefix ql-cf",
+    "dev:api": "npm run dev --prefix ps-sb/api",
+    "build": "npm run build --prefix ql-cf",
+    "lint": "npm run lint --prefix ql-cf"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
