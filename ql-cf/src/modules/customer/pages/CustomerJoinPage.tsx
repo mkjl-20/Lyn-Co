@@ -541,7 +541,7 @@ export function CustomerJoinPage() {
 
   function formatServicePrice(service: Service) {
     const price = formatCurrency(Number(service.price || 0));
-    return service.price_type === "starting" ? `${price}+` : price;
+    return service.price_type === "starting" ? `From ${price}` : price;
   }
 
   function formatDuration(minutes: number) {
@@ -1328,7 +1328,7 @@ export function CustomerJoinPage() {
                     </ul>
                     <div className="mt-4 space-y-2 border-t border-mist pt-3">
                       <div className="flex justify-between gap-3 text-xs"><span className="text-ink/65">Estimated duration</span><span className="font-semibold">{formatDuration(totalDuration)}</span></div>
-                      <div className="flex justify-between gap-3 text-sm"><span className="font-semibold">{applicablePromotion ? "Estimated after offer" : "Estimated total"}</span><span className="font-semibold text-sage-deep">{formatCurrency(totalPrice - (applicablePromotion?.discount ?? 0))}{selectedServices.some((service) => service.price_type === "starting") && "+"}</span></div>
+                      <div className="flex justify-between gap-3 text-sm"><span className="font-semibold">{selectedServices.some((service) => service.price_type === "starting") ? "Estimated starting total" : applicablePromotion ? "Estimated after offer" : "Estimated total"}</span><span className="font-semibold text-sage-deep">{formatCurrency(totalPrice - (applicablePromotion?.discount ?? 0))}</span></div>
                       {applicablePromotion && applicablePromotion.discount > 0 && <p className="text-right text-xs text-success">Best offer applied: {applicablePromotion.promotion.title} (−{formatCurrency(applicablePromotion.discount)})</p>}
                       {waitQuoteLoading && (
                         <p className="text-xs text-ink/60" role="status">Estimating wait…</p>

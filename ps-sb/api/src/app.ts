@@ -57,10 +57,12 @@ export function createApp() {
   app.get("/api/health", async (_req, res) => {
     try {
       const supabase = getSupabaseAdmin();
+      const healthProbeSignal = AbortSignal.timeout(5_000);
       const { error: databaseError } = await supabase
         .from("services")
         .select("id", { head: true })
-        .limit(1);
+        .limit(1)
+        .abortSignal(healthProbeSignal);
       if (databaseError) {
         console.error("Health check database probe failed:", databaseError.message);
         res.status(503).json({
@@ -75,34 +77,34 @@ export function createApp() {
 
       const schemaChecks = await Promise.all([
         supabase.from("queue_entry_services")
-          .select("preferred_staff_id", { head: true }).limit(0)
+          .select("preferred_staff_id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "queue_entry_services.preferred_staff_id", migration: "20261028213000_add_queue_service_staff_preferences.sql", error })),
         supabase.from("forecast_events")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "forecast_events", migration: "20261028230000_repair_forecast_schema.sql", error })),
         supabase.from("forecast_logs")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "forecast_logs", migration: "20261028230000_repair_forecast_schema.sql", error })),
         supabase.from("service_history")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "service_history", migration: "20261102110000_add_forecast_training_datasets.sql", error })),
         supabase.from("mlr_models")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "mlr_models", migration: "20261102110000_add_forecast_training_datasets.sql", error })),
         supabase.from("staff_availability")
-          .select("staff_id", { head: true }).limit(0)
+          .select("staff_id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "staff_availability", migration: "20261101090000_queue_availability_and_sms_outbox.sql", error })),
         supabase.from("queue_sms_outbox")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "queue_sms_outbox", migration: "20261101090000_queue_availability_and_sms_outbox.sql", error })),
         supabase.from("pos_transaction_adjustments")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "pos_transaction_adjustments", migration: "20261027130000_add_pos_adjustments.sql", error })),
         supabase.from("pos_transactions")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "pos_transactions", migration: null, error })),
         supabase.from("pos_transaction_items")
-          .select("id", { head: true }).limit(0)
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "pos_transaction_items", migration: null, error })),
       ]);
       const missingMigrations = new Set<string>();
