@@ -1,138 +1,757 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { Coffee, Play } from "lucide-react";
 import { useAuth } from "@/shared/context/AuthContext";
+import { BackButton } from "@/shared/components/BackButton";
+import { StatusBadge } from "@/shared/components/StatusBadge";
+import { QueueProgress } from "@/shared/components/QueueProgress";
+import { formatTicketNumber } from "@/shared/lib/ticketNumber";
 import {
   completeServiceItem,
+  callStaffServiceItem,
+  fetchAvailableStations,
+  fetchServiceSeatOptions,
+  updateServiceProgress,
   type QueueEntryRow,
   type QueueEntryServiceItem,
-  fetchActiveQueue,
+  type AvailableStation,
+  type ServiceSeatOption,
+  startStaffServiceItem,
+  fetchStaffQueue,
   subscribeToQueueChanges,
+  fetchQueueAddOnServices,
+  addServiceToQueue,
+  cancelStaffQueueEntry,
+  addManualQueueEntry,
+  type QueueAddOnService,
+  fetchQueueCrowdStatus,
+  type QueueCrowdStatus,
+  fetchStaffAvailability,
+  updateStaffAvailability,
+  fetchStaffRebalanceRequests,
+  respondToStaffRebalanceRequest,
+  type StaffRebalanceRequest,
+  type StaffAvailability,
 } from "../admin/services/queueAdminService";
+import { ServiceSeatMapPicker } from "../admin/components/SalonMap";
 
 export default function StaffQueuePage() {
-  const { currentUser, logout } = useAuth();
-  const navigate = useNavigate();
+  const { currentUser } = useAuth();
   const [entries, setEntries] = useState<QueueEntryRow[]>([]);
+  const [queueSearch, setQueueSearch] = useState("");
+  const [queueFilter, setQueueFilter] = useState<"all" | "waiting" | "in_service">("all");
+  const [crowdStatus, setCrowdStatus] = useState<QueueCrowdStatus | null>(null);
+  const [staffAvailability, setStaffAvailability] = useState<StaffAvailability>("available");
+  const [rebalanceRequests, setRebalanceRequests] = useState<StaffRebalanceRequest[]>([]);
+  const [respondingToRebalanceId, setRespondingToRebalanceId] = useState<string | null>(null);
+  const [isUpdatingAvailability, setIsUpdatingAvailability] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [startingItemId, setStartingItemId] = useState<string | null>(null);
+  const [availableStations, setAvailableStations] = useState<AvailableStation[]>([]);
+  const [availableServiceSeats, setAvailableServiceSeats] = useState<ServiceSeatOption[]>([]);
+  const [serviceSeatOptions, setServiceSeatOptions] = useState<ServiceSeatOption[]>([]);
+  const [selectedStationId, setSelectedStationId] = useState("");
+  const [selectedServiceSeatId, setSelectedServiceSeatId] = useState("");
+  const [stationsLoading, setStationsLoading] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [progressDrafts, setProgressDrafts] = useState<Record<string, string>>({});
+  const [updatingProgressItemId, setUpdatingProgressItemId] = useState<string | null>(null);
+  const [completingItemId, setCompletingItemId] = useState<string | null>(null);
+  const [addOnServices, setAddOnServices] = useState<QueueAddOnService[]>([]);
+  const [selectedAddOnByEntry, setSelectedAddOnByEntry] = useState<Record<string, string>>({});
+  const [addingServiceEntryId, setAddingServiceEntryId] = useState<string | null>(null);
+  const [pendingCancellation, setPendingCancellation] = useState<{ entryId: string; customerName: string; ticketNumber: number } | null>(null);
+  const [cancellationReason, setCancellationReason] = useState("");
+  const [isCancellingEntry, setIsCancellingEntry] = useState(false);
+  const [isAddingWalkIn, setIsAddingWalkIn] = useState(false);
+  const [manualCustomerName, setManualCustomerName] = useState("");
+  const [manualContactNumber, setManualContactNumber] = useState("");
+  const [manualServiceIds, setManualServiceIds] = useState<string[]>([]);
+  const [manualPriority, setManualPriority] = useState<"regular" | "senior" | "pwd" | "vip">("regular");
+  const [manualArrivalType, setManualArrivalType] = useState<"walk_in" | "appointment">("walk_in");
+  const [manualAppointmentAt, setManualAppointmentAt] = useState("");
+  const [manualPrivacyConsent, setManualPrivacyConsent] = useState(false);
+  const [isSavingWalkIn, setIsSavingWalkIn] = useState(false);
+  const staffId = currentUser?.id;
+  const isReceptionist = currentUser?.staffRole === "receptionist";
 
-  async function loadQueue() {
-    if (!currentUser) return;
+  const loadQueue = useCallback(async () => {
+    if (!staffId) return;
 
     try {
-      const all = await fetchActiveQueue();
-      const mine = all.filter(
-        (entry: QueueEntryRow) =>
-          entry.preferredStaffId === currentUser.id ||
-          entry.assignedStaffId === currentUser.id ||
-          entry.services.some((s: QueueEntryServiceItem) => s.assignedStaffId === currentUser.id)
-      );
-      setEntries(mine);
+      const [queueEntries, crowd] = await Promise.all([
+        fetchStaffQueue(staffId, isReceptionist),
+        fetchQueueCrowdStatus(),
+      ]);
+      setEntries(queueEntries);
+      setCrowdStatus(crowd);
+      setErrorMessage(null);
+      try {
+        setStaffAvailability(await fetchStaffAvailability());
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "Unable to load your availability.");
+      }
+      try {
+        setRebalanceRequests(await fetchStaffRebalanceRequests());
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "Unable to load workload requests.");
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Failed to load queue.");
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [staffId, isReceptionist]);
 
-  useEffect(() => {
-    loadQueue();
-    const unsubscribe = subscribeToQueueChanges(loadQueue);
-    return unsubscribe;
-  }, [currentUser?.id]);
-
-  async function handleComplete(itemId: string) {
+  async function handleToggleAvailability() {
+    setIsUpdatingAvailability(true);
+    setErrorMessage(null);
     try {
-      await completeServiceItem(itemId);
-      loadQueue();
+      const nextStatus = staffAvailability === "available" ? "on_break" : "available";
+      setStaffAvailability(await updateStaffAvailability(nextStatus));
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to complete service.");
+      setErrorMessage(error instanceof Error ? error.message : "Unable to update your availability.");
+    } finally {
+      setIsUpdatingAvailability(false);
     }
   }
 
+  async function handleRebalanceResponse(request: StaffRebalanceRequest, response: "accepted" | "declined") {
+    setRespondingToRebalanceId(request.id);
+    setErrorMessage(null);
+    try {
+      await respondToStaffRebalanceRequest(request.id, response);
+      setRebalanceRequests((current) => current.filter((item) => item.id !== request.id));
+      setErrorMessage(null);
+      await loadQueue();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to respond to workload request.");
+    } finally {
+      setRespondingToRebalanceId(null);
+    }
+  }
+
+  useEffect(() => {
+    // Load initial queue data and subscribe to external realtime updates.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadQueue();
+    const unsubscribe = subscribeToQueueChanges(loadQueue);
+    const timer = window.setInterval(() => void loadQueue(), 15_000);
+    return () => {
+      window.clearInterval(timer);
+      unsubscribe();
+    };
+  }, [loadQueue]);
+
+  useEffect(() => {
+    void fetchQueueAddOnServices()
+      .then(setAddOnServices)
+      .catch((error: unknown) => setErrorMessage(error instanceof Error ? error.message : "Unable to load services."));
+  }, []);
+
+  async function handleComplete(itemId: string) {
+    setCompletingItemId(itemId);
+    setErrorMessage(null);
+    try {
+      await completeServiceItem(itemId);
+      await loadQueue();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to complete service.");
+    } finally {
+      setCompletingItemId(null);
+    }
+  }
+
+  async function handleAddService(entryId: string) {
+    const serviceId = selectedAddOnByEntry[entryId];
+    if (!serviceId) return;
+    setAddingServiceEntryId(entryId);
+    setErrorMessage(null);
+    try {
+      await addServiceToQueue(entryId, serviceId);
+      setSelectedAddOnByEntry((current) => ({ ...current, [entryId]: "" }));
+      await loadQueue();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to add service.");
+    } finally {
+      setAddingServiceEntryId(null);
+    }
+  }
+
+  async function handleCancelEntry(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!pendingCancellation || !cancellationReason.trim()) return;
+    setIsCancellingEntry(true);
+    setErrorMessage(null);
+    try {
+      await cancelStaffQueueEntry(pendingCancellation.entryId, cancellationReason.trim());
+      setPendingCancellation(null);
+      setCancellationReason("");
+      await loadQueue();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to cancel queue visit.");
+    } finally {
+      setIsCancellingEntry(false);
+    }
+  }
+
+  async function handleAddWalkIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setErrorMessage(null);
+    setIsSavingWalkIn(true);
+    try {
+      await addManualQueueEntry({
+        customerName: manualCustomerName.trim(),
+        contactNumber: manualContactNumber.trim(),
+        serviceIds: manualServiceIds,
+        priorityType: manualPriority,
+        arrivalType: manualArrivalType,
+        appointmentAt: manualAppointmentAt || null,
+        privacyConsent: manualPrivacyConsent,
+      });
+      setManualCustomerName("");
+      setManualContactNumber("");
+      setManualServiceIds([]);
+      setManualPriority("regular");
+      setManualArrivalType("walk_in");
+      setManualAppointmentAt("");
+      setManualPrivacyConsent(false);
+      setIsAddingWalkIn(false);
+      await loadQueue();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to add walk-in.");
+    } finally {
+      setIsSavingWalkIn(false);
+    }
+  }
+
+  async function handleProgressUpdate(itemId: string) {
+    setUpdatingProgressItemId(itemId);
+    setErrorMessage(null);
+    try {
+      await updateServiceProgress(itemId, progressDrafts[itemId] ?? "");
+      await loadQueue();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to update customer progress.");
+    } finally {
+      setUpdatingProgressItemId(null);
+    }
+  }
+
+  async function handleOpenAccept(item: QueueEntryServiceItem) {
+    if (staffAvailability === "on_break") {
+      setErrorMessage("End your break before starting a new service.");
+      return;
+    }
+    if (!currentUser) {
+      setErrorMessage("Your staff session is unavailable. Please sign in again.");
+      return;
+    }
+    setErrorMessage(null);
+    setStartingItemId(item.id);
+    setSelectedStationId("");
+    setSelectedServiceSeatId("");
+    setStationsLoading(true);
+    try {
+      const [stations, serviceSeats] = await Promise.all([
+        fetchAvailableStations(item.category, currentUser.id, item.id),
+        fetchServiceSeatOptions(item.category, item.id),
+      ]);
+      setAvailableStations(stations);
+      setServiceSeatOptions(serviceSeats);
+      const availableSeats = serviceSeats.filter((seat) => seat.isEligible && seat.status === "free");
+      setAvailableServiceSeats(availableSeats);
+      const reservedStation = stations.find((station) => station.id === item.stationId);
+      const station = reservedStation ?? (stations.length === 1 ? stations[0] : null);
+      const reservedSeat = availableSeats.find((seat) => seat.id === item.customerServiceSeatId);
+      const serviceSeat = reservedSeat ?? (availableSeats.length === 1 ? availableSeats[0] : null);
+      if (stations.length === 0 || availableSeats.length === 0) {
+        setStartingItemId(null);
+        setErrorMessage(stations.length === 0
+          ? "No free station matches this service right now."
+          : "No free service seat matches this service right now.");
+      } else if (station && serviceSeat) {
+        setStarting(true);
+        await callStaffServiceItem(item.id, { customerServiceSeatId: serviceSeat.id });
+        await startStaffServiceItem(item.id, station.id, serviceSeat.id);
+        setStartingItemId(null);
+        await loadQueue();
+      } else {
+        setSelectedStationId(station?.id ?? "");
+        setSelectedServiceSeatId(serviceSeat?.id ?? "");
+      }
+    } catch (error) {
+      setStartingItemId(null);
+      setServiceSeatOptions([]);
+      setAvailableServiceSeats([]);
+      setErrorMessage(error instanceof Error ? error.message : "Failed to start this service.");
+    } finally {
+      setStationsLoading(false);
+      setStarting(false);
+    }
+  }
+
+  async function handleAccept(itemId: string) {
+    if (staffAvailability === "on_break") {
+      setErrorMessage("End your break before starting a new service.");
+      return;
+    }
+    if (!currentUser || !selectedStationId || !selectedServiceSeatId) {
+      setErrorMessage("Please select a station and a service chair first.");
+      return;
+    }
+
+    setStarting(true);
+    setErrorMessage(null);
+    try {
+      await callStaffServiceItem(itemId, { customerServiceSeatId: selectedServiceSeatId });
+      await startStaffServiceItem(itemId, selectedStationId, selectedServiceSeatId);
+      setStartingItemId(null);
+      setSelectedStationId("");
+      setSelectedServiceSeatId("");
+      await loadQueue();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to accept customer.");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  const visibleServiceItems = entries.flatMap((entry) =>
+    entry.services
+      .filter((item: QueueEntryServiceItem) => isReceptionist || item.canStaffHandle || item.status !== "pending")
+      .map((item) => ({ entry, item }))
+  ).filter(({ entry, item }) => {
+    const query = queueSearch.trim().toLowerCase();
+    const matchesSearch = !query
+      || `${entry.customerName} ${entry.contactNumber} ${entry.ticketNumber} ${item.name}`.toLowerCase().includes(query);
+    const matchesStatus = queueFilter === "all" || item.status === queueFilter;
+    return matchesSearch && matchesStatus;
+  });
+  const waitingVisits = entries.filter((entry) => entry.status === "waiting").length;
+  const inServiceVisits = entries.filter((entry) => entry.status === "in_service").length;
+  const assignedServices = entries.reduce((count, entry) =>
+    count + entry.services.filter((item) => item.canStaffHandle && item.status === "pending").length, 0
+  );
+
   return (
-    <div className="min-h-screen bg-mist text-ink">
-      <header className="sticky top-0 z-40 border-b border-mist bg-white/95 backdrop-blur">
+    <div className="pastel-pink-gradient-page min-h-screen text-ink">
+      <header className="sticky top-0 z-40 border-b border-[var(--app-border)] bg-white/70 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
-            <Link to="/staff" className="text-xs font-medium text-sage-deep hover:underline">
-              ← Dashboard
-            </Link>
-            <h1 className="font-display text-base font-semibold">My Queue</h1>
+            <BackButton to="/lyn-co/staff" label="Back to staff dashboard" />
+            <h1 className="ui-section-title">{isReceptionist ? "Queue Desk" : "My Queue"}</h1>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              logout();
-              navigate("/login");
-            }}
-            className="rounded-lg border border-mist px-3 py-2 text-xs font-medium"
-          >
-            Log out
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleToggleAvailability()}
+              disabled={isUpdatingAvailability}
+              className={`inline-flex min-h-11 items-center gap-2 rounded-lg px-4 text-sm font-bold shadow-sm transition hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage-deep disabled:cursor-not-allowed disabled:opacity-50 ${
+                staffAvailability === "available"
+                  ? "border border-gold/40 bg-gold-light text-ink"
+                  : "bg-sage-deep text-white"
+              }`}
+            >
+              {staffAvailability === "available" ? <Coffee size={17} aria-hidden="true" /> : <Play size={17} aria-hidden="true" />}
+              {isUpdatingAvailability ? "Saving…" : staffAvailability === "available" ? "Start break" : "End break"}
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6">
+        {staffAvailability === "on_break" && (
+          <p role="status" className="mb-4 rounded-lg border border-gold/30 bg-gold-light px-4 py-3 text-sm text-ink/75">
+            You are on break. New services are paused; you can finish a service already in progress.
+          </p>
+        )}
+        {rebalanceRequests.length > 0 && (
+          <section aria-labelledby="rebalance-requests-title" className="mb-5 rounded-xl border border-sage/30 bg-white p-4 shadow-sm">
+            <h2 id="rebalance-requests-title" className="font-display text-lg font-semibold text-ink">Workload rebalance requests</h2>
+            <p className="mt-1 text-sm text-ink/60">Accepting assigns you the waiting service; declining leaves the current assignment unchanged.</p>
+            <ul className="mt-3 space-y-3">
+              {rebalanceRequests.map((request) => (
+                <li key={request.id} className="flex flex-col gap-3 rounded-lg border border-mist p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-ink">
+                      Ticket {formatTicketNumber(request.ticketNumber)} · {request.customerName}
+                    </p>
+                    <p className="mt-1 text-xs text-ink/60">{request.serviceName} · {request.serviceCategory}</p>
+                    <p className="mt-1 text-xs text-ink/50">Proposed by {request.requestedByName} from {request.fromStaffName}</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={respondingToRebalanceId === request.id || staffAvailability === "on_break"}
+                      onClick={() => void handleRebalanceResponse(request, "accepted")}
+                      className="ui-button-primary min-h-9 rounded-lg px-3 text-xs disabled:opacity-40"
+                    >
+                      {respondingToRebalanceId === request.id ? "Saving…" : "Accept"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={respondingToRebalanceId === request.id}
+                      onClick={() => void handleRebalanceResponse(request, "declined")}
+                      className="min-h-9 rounded-lg border border-mist px-3 text-xs font-semibold text-ink/70 disabled:opacity-40"
+                    >
+                      Decline
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <div className="mb-4 flex justify-end">
+          <button type="button" onClick={() => setIsAddingWalkIn((open) => !open)} className="ui-button-primary">
+            {isAddingWalkIn ? "Close walk-in form" : "Add walk-in"}
+          </button>
+        </div>
+        {isAddingWalkIn && (
+          <form onSubmit={(event) => void handleAddWalkIn(event)} className="mb-5 grid gap-3 rounded-xl border border-mist bg-white p-4 shadow-sm sm:grid-cols-2">
+            <label className="text-xs font-medium text-ink/70">
+              Customer name
+              <input required maxLength={100} value={manualCustomerName} onChange={(event) => setManualCustomerName(event.target.value)} className="dashboard-filter-control mt-1 block w-full" />
+            </label>
+            <label className="text-xs font-medium text-ink/70">
+              Mobile number
+              <input required type="tel" inputMode="numeric" pattern="09[0-9]{9}" maxLength={11} value={manualContactNumber} onChange={(event) => setManualContactNumber(event.target.value.replace(/\D/g, "").slice(0, 11))} placeholder="09XXXXXXXXX" className="dashboard-filter-control mt-1 block w-full" />
+            </label>
+            <fieldset className="rounded-lg border border-mist p-3 sm:col-span-2">
+              <legend className="px-1 text-xs font-medium text-ink/70">Select services</legend>
+              <div className="grid max-h-36 gap-2 overflow-y-auto sm:grid-cols-2">
+                {addOnServices.map((service) => (
+                  <label key={service.id} className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" checked={manualServiceIds.includes(service.id)} onChange={(event) => setManualServiceIds((current) => event.target.checked ? [...current, service.id] : current.filter((id) => id !== service.id))} />
+                    <span>{service.name} · ₱{Number(service.price).toFixed(2)}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <label className="text-xs font-medium text-ink/70">
+              Customer type
+              <select value={manualPriority} onChange={(event) => setManualPriority(event.target.value as typeof manualPriority)} className="dashboard-filter-control mt-1 block w-full">
+                <option value="regular">Regular</option><option value="senior">Senior</option><option value="pwd">PWD</option><option value="vip">VIP</option>
+              </select>
+            </label>
+            <label className="text-xs font-medium text-ink/70">
+              Visit type
+              <select value={manualArrivalType} onChange={(event) => setManualArrivalType(event.target.value as typeof manualArrivalType)} className="dashboard-filter-control mt-1 block w-full">
+                <option value="walk_in">Walk-in</option><option value="appointment">Phone booking</option>
+              </select>
+            </label>
+            {manualArrivalType === "appointment" && (
+              <label className="text-xs font-medium text-ink/70">
+                Appointment time
+                <input required type="datetime-local" value={manualAppointmentAt} onChange={(event) => setManualAppointmentAt(event.target.value)} className="dashboard-filter-control mt-1 block w-full" />
+              </label>
+            )}
+            <label className="flex items-start gap-2 text-xs text-ink/70">
+              <input type="checkbox" checked={manualPrivacyConsent} onChange={(event) => setManualPrivacyConsent(event.target.checked)} className="mt-0.5" />
+              Customer was informed of the privacy notice and consented to joining the queue.
+            </label>
+            <button type="submit" disabled={isSavingWalkIn || manualServiceIds.length === 0 || !manualPrivacyConsent} className="ui-button-primary sm:col-span-2">
+              {isSavingWalkIn ? "Adding…" : "Add to queue"}
+            </button>
+          </form>
+        )}
         {errorMessage && (
           <p role="alert" className="mb-4 text-sm text-clay">
             {errorMessage}
           </p>
         )}
+        {crowdStatus?.crowded && (
+          <p role="alert" className="mb-4 rounded-lg border border-clay/30 bg-clay-light px-4 py-3 text-sm font-semibold text-clay">
+            Queue crowding alert: {crowdStatus.waiting} customers are waiting (threshold {crowdStatus.threshold}).
+          </p>
+        )}
+
+        <section aria-label="Queue summary" className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {[
+            { label: "Waiting visits", value: waitingVisits },
+            { label: "In service", value: inServiceVisits },
+            { label: isReceptionist ? "Queue entries" : "Services for you", value: isReceptionist ? entries.length : assignedServices },
+          ].map((stat) => (
+            <div key={stat.label} className="rounded-xl border border-mist bg-white p-3 shadow-sm sm:p-4">
+              <p className="ui-metadata font-semibold">{stat.label}</p>
+              <p className="mt-1 font-display text-2xl font-semibold text-ink">{stat.value}</p>
+            </div>
+          ))}
+        </section>
+
+        <div className="mb-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <label htmlFor="staff-queue-search" className="sr-only">Search queue</label>
+          <input
+            id="staff-queue-search"
+            type="search"
+            value={queueSearch}
+            onChange={(event) => setQueueSearch(event.target.value)}
+            placeholder="Search customer, ticket, phone, or service"
+            className="dashboard-filter-control min-h-11 w-full"
+          />
+          <label className="sr-only" htmlFor="staff-queue-filter">Filter queue status</label>
+          <select
+            id="staff-queue-filter"
+            value={queueFilter}
+            onChange={(event) => setQueueFilter(event.target.value as typeof queueFilter)}
+            className="dashboard-filter-control min-h-11 min-w-40"
+          >
+            <option value="all">All active visits</option>
+            <option value="waiting">Waiting</option>
+            <option value="in_service">In service</option>
+          </select>
+        </div>
 
         {isLoading ? (
           <div className="h-40 animate-pulse rounded-2xl bg-white" />
-        ) : entries.length === 0 ? (
+        ) : visibleServiceItems.length === 0 ? (
           <div className="rounded-2xl border border-mist bg-white p-10 text-center">
-            <p className="text-sm font-semibold">No customers assigned to you</p>
-            <p className="mt-1 text-xs text-ink/45">Check back when the admin starts a service for you.</p>
+            <p className="text-sm font-semibold">{entries.length === 0 ? "No active queue visits" : "No visits match your search or filter"}</p>
           </div>
         ) : (
           <ul className="space-y-3">
-            {entries.map((entry) => (
-              <li key={entry.id} className="rounded-2xl border border-mist bg-white p-5 shadow-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold">{entry.customerName}</p>
-                    <p className="text-xs text-ink/50">
-                      {entry.status === "waiting" ? `Position ${entry.position ?? "—"}` : "In progress"} ·{" "}
-                      {entry.contactNumber}
+            {visibleServiceItems.map(({ entry, item }) => {
+              const isFirstVisibleItem = visibleServiceItems.find(({ entry: candidate }) => candidate.id === entry.id)?.item.id === item.id;
+              const serviceQueueLabel = item.status === "pending" && entry.status === "in_service"
+                ? "Up next"
+                : item.status === "pending"
+                  ? item.customerStage === "called" ? "Called" : "Waiting"
+                  : item.status === "in_service" ? "In service"
+                    : item.status === "completed" ? "Completed" : "Cancelled";
+              return (
+              <li key={item.id} className="rounded-xl border border-mist bg-white p-4 shadow-sm sm:p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-base font-semibold text-ink">{item.name}</p>
+                    <p className="mt-1 text-sm text-ink/60">Ticket {formatTicketNumber(entry.ticketNumber)} · {entry.customerName}</p>
+                    <p className="text-sm text-ink/55">{entry.status === "waiting" ? `Queue position ${entry.position ?? "—"}` : "Visit in progress"} · {entry.contactNumber}</p>
+                    {item.preferredStaffId && (
+                      <p className="mt-1 text-sm font-medium text-ink/65">
+                        Customer requested {item.preferredStaffId === currentUser?.id ? "you" : "another stylist"}
+                      </p>
+                    )}
+                    {entry.noShowRiskReason && (
+                      <p className="mt-1 text-sm font-medium text-clay">No-show risk: {entry.noShowRiskReason}</p>
+                    )}
+                    <p className="mt-1 text-sm font-semibold text-sage-deep">
+                      Station: {item.stationLabel ?? "Not assigned"} · Service seat: {item.customerServiceSeatLabel ?? "Not assigned"}
+                    </p>
+                    <p className="mt-1 text-sm text-ink/60">
+                      {serviceQueueLabel}
                     </p>
                   </div>
-                  <span className="rounded-full bg-sage-light px-2 py-0.5 text-[10px] font-semibold text-sage-deep">
-                    {entry.status}
-                  </span>
+                  <StatusBadge status={item.status === "pending" ? item.customerStage : item.status}>
+                    {serviceQueueLabel}
+                  </StatusBadge>
                 </div>
+                {isFirstVisibleItem && (
+                  <div className="mt-3">
+                    <QueueProgress
+                      status={entry.status}
+                      customerStage={entry.services.some((service) => service.status === "in_service") ? "in_service" : "waiting"}
+                      services={entry.services.map((service) => ({
+                        id: service.id,
+                        name: service.name,
+                        status: service.status,
+                        customerStage: service.customerStage,
+                      }))}
+                    />
+                  </div>
+                )}
 
-                <div className="mt-3 space-y-2 border-t border-mist/50 pt-3">
-                  {entry.services
-                    .filter(
-                      (s: QueueEntryServiceItem) =>
-                        s.assignedStaffId === currentUser?.id || s.status !== "pending"
-                    )
-                    .map((item: QueueEntryServiceItem) => (
-                      <div key={item.id} className="flex items-center justify-between rounded-md bg-porcelain/40 px-3 py-2">
-                        <div>
-                          <p className="text-xs font-medium">{item.name}</p>
-                          <p className="text-[11px] text-ink/45">{item.status}</p>
-                        </div>
-                        {item.status === "in_service" && item.assignedStaffId === currentUser?.id && (
-                          <button
-                            type="button"
-                            onClick={() => handleComplete(item.id)}
-                            className="rounded-md bg-sage-deep px-3 py-1 text-[11px] font-semibold text-white"
-                          >
-                            Done
-                          </button>
-                        )}
+                <div className="mt-3 border-t border-mist pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    {item.status === "in_service" && item.staffUpdate && (
+                      <p className="min-w-0 flex-1 text-sm text-ink/65">{item.staffUpdate}</p>
+                    )}
+                    {item.status === "in_service" && item.assignedStaffId === currentUser?.id && (
+                      <div className="flex w-full flex-col gap-2 sm:flex-row">
+                        <input
+                          type="text"
+                          maxLength={160}
+                          value={progressDrafts[item.id] ?? item.staffUpdate ?? ""}
+                          onChange={(event) => setProgressDrafts((current) => ({
+                            ...current,
+                            [item.id]: event.target.value,
+                          }))}
+                          placeholder="Progress update"
+                          aria-label={`Progress update for ${item.name}`}
+                          className="min-h-10 min-w-0 flex-1 rounded-md border border-mist bg-white px-3 py-2 text-sm outline-none focus:border-sage"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleProgressUpdate(item.id)}
+                          disabled={updatingProgressItemId === item.id}
+                          className="min-h-10 rounded-md border border-sage/40 px-4 py-2 text-sm font-semibold text-sage-deep disabled:opacity-50"
+                        >
+                          {updatingProgressItemId === item.id ? "Saving..." : "Update"}
+                        </button>
                       </div>
-                    ))}
+                    )}
+                    {item.status === "pending" && item.canStaffHandle && (
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenAccept(item)}
+                        disabled={startingItemId === item.id || staffAvailability === "on_break"}
+                        className="ui-button-primary disabled:opacity-50"
+                      >
+                        {startingItemId === item.id ? "Starting..." : "Start service"}
+                      </button>
+                    )}
+                    {item.status === "in_service" && item.assignedStaffId === currentUser?.id && (
+                      <button
+                        type="button"
+                        onClick={() => handleComplete(item.id)}
+                        disabled={completingItemId === item.id}
+                        className="ui-button-primary disabled:opacity-50"
+                      >
+                        {completingItemId === item.id ? "Completing..." : "Complete service"}
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {isFirstVisibleItem && (entry.status === "waiting" || entry.status === "in_service") && (
+                  <div className="mt-4 flex flex-wrap gap-2 border-t border-mist pt-3">
+                    <select
+                      aria-label={`Add a service for ${entry.customerName}`}
+                      value={selectedAddOnByEntry[entry.id] ?? ""}
+                      onChange={(event) => setSelectedAddOnByEntry((current) => ({ ...current, [entry.id]: event.target.value }))}
+                      className="dashboard-filter-control min-w-0 flex-1 outline-none focus:border-sage"
+                    >
+                      <option value="">Add an available service…</option>
+                      {addOnServices.map((service) => (
+                        <option key={service.id} value={service.id}>
+                          {service.name} · ₱{Number(service.price).toFixed(2)}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void handleAddService(entry.id)}
+                      disabled={!selectedAddOnByEntry[entry.id] || addingServiceEntryId === entry.id}
+                      className="dashboard-primary-action min-h-10 rounded-md px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {addingServiceEntryId === entry.id ? "Adding…" : "Add service"}
+                    </button>
+                  </div>
+                )}
+                {isFirstVisibleItem && entry.status === "waiting" && (
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingCancellation({
+                          entryId: entry.id,
+                          customerName: entry.customerName,
+                          ticketNumber: entry.ticketNumber,
+                        });
+                        setCancellationReason("");
+                      }}
+                      className="min-h-10 rounded-md border border-clay/40 px-4 text-sm font-semibold text-clay transition-colors hover:bg-clay-light"
+                    >
+                      Cancel visit
+                    </button>
+                  </div>
+                )}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </main>
+      {startingItemId && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-ink/35 p-0 backdrop-blur-sm sm:items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !starting) { setStartingItemId(null); setSelectedStationId(""); } }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="station-dialog-title" className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl border border-[var(--app-border)] bg-white p-5 shadow-2xl sm:max-w-md sm:rounded-2xl sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-sage-deep">Start service</p>
+                <h2 id="station-dialog-title" className="mt-1 font-display text-xl font-semibold text-ink">Assign a station and chair</h2>
+                <p className="mt-1 text-sm text-ink/60">{visibleServiceItems.find(({ item }) => item.id === startingItemId)?.item.name}</p>
+              </div>
+              <button type="button" aria-label="Close dialog" disabled={starting} onClick={() => { setStartingItemId(null); setSelectedStationId(""); }} className="dashboard-icon-control flex h-9 w-9 items-center justify-center text-ink/65 transition-colors hover:text-ink disabled:opacity-50">×</button>
+            </div>
+            {stationsLoading ? <p className="mt-5 rounded-lg bg-sage-light/60 p-4 text-sm text-ink/65">Finding available stations and service chairs…</p> : (
+              <div className="mt-5 space-y-3">
+                {availableStations.length === 0 ? <p role="alert" className="rounded-lg border border-clay/20 bg-clay-light p-4 text-sm text-clay">No free station matches this service right now.</p> : (
+                  <label className="block text-xs font-semibold text-ink/65">Available station
+                    <select value={selectedStationId} onChange={(event) => setSelectedStationId(event.target.value)} disabled={starting} className="dashboard-filter-control mt-1 w-full" aria-label="Select station">
+                      <option value="">Select station</option>
+                      {availableStations.map((station) => <option key={station.id} value={station.id}>{station.label}</option>)}
+                    </select>
+                  </label>
+                )}
+                {serviceSeatOptions.length === 0 ? (
+                  <p role="alert" className="rounded-lg border border-clay/20 bg-clay-light p-4 text-sm text-clay">No service chairs are configured on the salon map.</p>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-ink/65">Choose an available chair from the salon map</p>
+                    <ServiceSeatMapPicker
+                      seats={serviceSeatOptions}
+                      selectedSeatId={selectedServiceSeatId}
+                      onSelect={setSelectedServiceSeatId}
+                      disabled={starting}
+                    />
+                    {availableServiceSeats.length === 0 && (
+                      <p role="alert" className="rounded-lg border border-clay/20 bg-clay-light p-3 text-xs text-clay">No free service chair matches this service right now.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" disabled={starting} onClick={() => { setStartingItemId(null); setSelectedStationId(""); }} className="rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={() => void handleAccept(startingItemId)} disabled={stationsLoading || starting || !selectedStationId || !selectedServiceSeatId} className="dashboard-primary-action rounded-lg px-4 text-sm font-semibold disabled:opacity-50">{starting ? "Starting..." : "Confirm and start"}</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {pendingCancellation && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-ink/35 p-0 backdrop-blur-sm sm:items-center sm:p-5">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cancel-visit-title"
+            onSubmit={(event) => void handleCancelEntry(event)}
+            className="w-full rounded-t-2xl border border-[var(--app-border)] bg-white p-5 shadow-2xl sm:max-w-md sm:rounded-2xl sm:p-6"
+          >
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-clay">Queue update</p>
+            <h2 id="cancel-visit-title" className="mt-1 font-display text-xl font-semibold text-ink">
+              Cancel ticket {formatTicketNumber(pendingCancellation.ticketNumber)}?
+            </h2>
+            <p className="mt-1 text-sm text-ink/60">{pendingCancellation.customerName}'s waiting visit will be removed from the active queue.</p>
+            <label htmlFor="cancellation-reason" className="mt-4 block text-sm font-semibold text-ink/75">
+              Reason
+              <textarea
+                id="cancellation-reason"
+                required
+                maxLength={240}
+                value={cancellationReason}
+                onChange={(event) => setCancellationReason(event.target.value)}
+                className="dashboard-filter-control mt-1.5 min-h-24 w-full resize-y"
+                placeholder="For example: customer requested cancellation"
+              />
+            </label>
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                disabled={isCancellingEntry}
+                onClick={() => setPendingCancellation(null)}
+                className="min-h-10 rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70 disabled:opacity-50"
+              >
+                Keep visit
+              </button>
+              <button
+                type="submit"
+                disabled={isCancellingEntry || !cancellationReason.trim()}
+                className="ui-button-danger disabled:opacity-50"
+              >
+                {isCancellingEntry ? "Cancelling…" : "Confirm cancellation"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

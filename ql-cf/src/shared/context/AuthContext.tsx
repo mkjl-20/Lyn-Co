@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { supabaseClient } from "@/shared/lib/supabaseClient";
+import { apiRequest } from "@/shared/lib/apiClient";
 
 import type {
   Session,
@@ -17,8 +18,7 @@ export type UserRole = "admin" | "staff";
 
 export type StaffRole =
   | "hairstylist"
-  | "manicurist"
-  | "pedicurist"
+  | "nail_technician"
   | "receptionist"
   | null;
 
@@ -29,6 +29,7 @@ export interface Profile {
   account_role: UserRole;
   staff_role: StaffRole;
   is_active: boolean;
+  must_change_password: boolean;
 }
 
 export interface CurrentUser {
@@ -38,6 +39,7 @@ export interface CurrentUser {
   accountRole: UserRole;
   staffRole: StaffRole;
   isActive: boolean;
+  mustChangePassword: boolean;
 }
 
 interface LoginCredentials {
@@ -61,6 +63,7 @@ interface AuthContextType {
     credentials: LoginCredentials
   ) => Promise<LoginResult>;
 
+  updateCurrentProfile: (fullName: string) => Promise<void>;
   logout: () => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -108,6 +111,8 @@ export function AuthProvider({
         profileData.staff_role,
       isActive:
         profileData.is_active,
+      mustChangePassword:
+        profileData.must_change_password,
     };
   };
 
@@ -118,7 +123,8 @@ export function AuthProvider({
    * user has an authenticated Supabase session.
    */
   const loadProfile = async (
-    userId: string
+    userId: string,
+    fallbackUser?: User
   ) => {
     console.log(
       "Loading profile:",
@@ -138,6 +144,7 @@ export function AuthProvider({
           account_role,
           staff_role,
           is_active
+          , must_change_password
         `)
         .eq("id", userId)
         .maybeSingle();
@@ -148,7 +155,16 @@ export function AuthProvider({
         error
       );
 
-      setProfile(null);
+      const metadata = fallbackUser?.user_metadata;
+      setProfile(metadata?.account_role ? {
+        id: userId,
+        username: metadata.username ?? fallbackUser?.email?.split("@")[0] ?? "",
+        full_name: metadata.full_name ?? null,
+        account_role: metadata.account_role,
+        staff_role: metadata.staff_role ?? null,
+        is_active: metadata.is_active ?? true,
+        must_change_password: metadata.must_change_password ?? false,
+      } as Profile : null);
       return;
     }
 
@@ -158,7 +174,16 @@ export function AuthProvider({
         userId
       );
 
-      setProfile(null);
+      const metadata = fallbackUser?.user_metadata;
+      setProfile(metadata?.account_role ? {
+        id: userId,
+        username: metadata.username ?? fallbackUser?.email?.split("@")[0] ?? "",
+        full_name: metadata.full_name ?? null,
+        account_role: metadata.account_role,
+        staff_role: metadata.staff_role ?? null,
+        is_active: metadata.is_active ?? true,
+        must_change_password: metadata.must_change_password ?? false,
+      } as Profile : null);
       return;
     }
 
@@ -224,7 +249,8 @@ export function AuthProvider({
 
         if (currentUser) {
           await loadProfile(
-            currentUser.id
+            currentUser.id,
+            currentUser
           );
         } else {
           setProfile(null);
@@ -287,7 +313,8 @@ export function AuthProvider({
             }
 
             loadProfile(
-              newUser.id
+              newUser.id,
+              newUser
             ).finally(() => {
               if (mounted) {
                 setLoading(false);
@@ -314,7 +341,7 @@ export function AuthProvider({
    *
    * username/password
    *       ↓
-   * login Edge Function
+  * Express login endpoint
    *       ↓
    * username → internal Auth email
    *       ↓
@@ -345,7 +372,7 @@ export function AuthProvider({
     );
 
     /*
-     * Ask the Edge Function to resolve
+    * Ask the Express API to resolve
      * the username to the internal Supabase
      * Auth account.
      *
@@ -353,30 +380,16 @@ export function AuthProvider({
      * The browser never directly queries
      * the profiles table here.
      */
-    const {
-      data,
-      error,
-    } =
-      await supabaseClient.functions.invoke(
-        "login",
-        {
-          body: {
-            username: cleanUsername,
-            password,
-          },
-        }
-      );
-
-    if (error) {
-      console.error(
-        "Login Edge Function error:",
-        error
-      );
-
-      throw new Error(
-        "Invalid username or password."
-      );
-    }
+    const data = await apiRequest<{
+      success?: boolean;
+      message?: string;
+      accountRole?: string;
+      session?: Session;
+      profile?: Profile;
+    }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username: cleanUsername, password }),
+    });
 
     if (!data?.success) {
       throw new Error(
@@ -385,57 +398,15 @@ export function AuthProvider({
       );
     }
 
-    /*
-     * The Edge Function returns the
-     * internal Auth email.
-     *
-     * The user never enters this email.
-     */
-    const internalEmail =
-      data.email;
-
-    if (!internalEmail) {
-      console.error(
-        "Login function did not return an email."
-      );
-
-      throw new Error(
-        "Authentication account is not configured correctly."
-      );
+    if (!data.session) {
+      throw new Error("Login succeeded but no session was created.");
     }
 
-    /*
-     * Authenticate through Supabase Auth.
-     *
-     * Password verification is handled
-     * by Supabase Auth.
-     */
-    const {
-      data: authData,
-      error: loginError,
-    } =
-      await supabaseClient.auth.signInWithPassword(
-        {
-          email: internalEmail,
-          password,
-        }
-      );
+    const { error: sessionError } = await supabaseClient.auth.setSession(data.session);
+    if (sessionError) throw new Error(sessionError.message);
 
-    if (loginError) {
-      console.error(
-        "Supabase password authentication error:",
-        loginError
-      );
-
-      throw new Error(
-        "Invalid username or password."
-      );
-    }
-
-    if (!authData.session) {
-      throw new Error(
-        "Login succeeded but no session was created."
-      );
+    if (data.profile) {
+      setProfile(data.profile);
     }
 
     console.log(
@@ -448,10 +419,24 @@ export function AuthProvider({
     };
   };
 
+  const updateCurrentProfile = async (fullName: string) => {
+    const { profile: updatedProfile } = await apiRequest<{ profile: Profile }>("/api/auth/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ fullName }),
+    });
+    setProfile(updatedProfile);
+  };
+
   /*
    * LOGOUT
    */
   const logout = async () => {
+    try {
+      await apiRequest("/api/auth/logout", { method: "POST" });
+    } catch (auditError) {
+      console.error("Logout audit request failed:", auditError);
+    }
+
     const {
       error,
     } =
@@ -485,7 +470,7 @@ export function AuthProvider({
    * Current application role.
    */
   const role =
-    profile?.account_role ?? null;
+    profile?.account_role ?? (user?.user_metadata?.account_role as UserRole | null) ?? null;
 
   return (
     <AuthContext.Provider
@@ -497,6 +482,7 @@ export function AuthProvider({
         role,
         loading,
         loginWithUsername,
+        updateCurrentProfile,
         logout,
         signOut,
       }}

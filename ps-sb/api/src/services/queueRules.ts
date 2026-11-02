@@ -1,6 +1,22 @@
 export type PriorityType = "regular" | "senior" | "pwd" | "vip";
 export type ArrivalType = "walk_in" | "appointment";
 
+export function serviceLane(category: string | null | undefined) {
+  const normalized = (category ?? "").trim().toLowerCase();
+  if (/hair|rebond|hairstyl|make[\s_-]?up|brows?|eyebrows?|lash/.test(normalized)) return "hair";
+  if (/nail|mani|pedi|foot/.test(normalized)) return "nails";
+  return "other";
+}
+
+export function staffCanPerformCategory(staffRoleLane: string | null, category: string | null | undefined) {
+  const lane = serviceLane(category);
+  const resolvedRoleLane = staffRoleLane === "hairstylist" ? "hair"
+    : staffRoleLane === "nail_technician" || staffRoleLane === "manicurist" || staffRoleLane === "pedicurist" ? "nails"
+    : staffRoleLane === "hair" || staffRoleLane === "nails" || staffRoleLane === "other" ? staffRoleLane
+    : "other";
+  return resolvedRoleLane === lane;
+}
+
 const PRIORITY_RANK: Record<PriorityType, number> = {
   vip: 0,
   senior: 1,
@@ -31,7 +47,9 @@ export function queueRank(input: {
 }
 
 export function resolveJoinStatus(arrivalType: ArrivalType, lateAppointment: boolean) {
-  if (arrivalType === "appointment" && !lateAppointment) return "scheduled";
+  // Queue status enum only supports waiting, in_service, completed, cancelled, no_show.
+  // Appointment joins still enter as waiting so they can be ranked by priority without
+  // violating the database schema.
   return "waiting";
 }
 

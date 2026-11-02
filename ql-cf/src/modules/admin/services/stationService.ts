@@ -1,4 +1,4 @@
-import { supabaseClient } from "../../../shared/lib/supabaseClient";
+import { apiRequest } from "../../../shared/lib/apiClient";
 
 export interface StationRow {
   id: string;
@@ -7,28 +7,35 @@ export interface StationRow {
   homeStaffId: string | null;
   homeStaffName: string | null;
   isActive: boolean;
+  isOutOfService: boolean;
+  outOfServiceReason: string | null;
 }
 
-function mapStationRow(row: any): StationRow {
+function mapStationRow(row: {
+  id: string;
+  label: string;
+  category: string;
+  home_staff_id: string | null;
+  home_staff_name?: string | null;
+  is_active: boolean;
+  is_out_of_service: boolean;
+  out_of_service_reason: string | null;
+}): StationRow {
   return {
     id: row.id,
     label: row.label,
     category: row.category,
     homeStaffId: row.home_staff_id,
-    homeStaffName: row.profiles?.full_name ?? null,
+    homeStaffName: row.home_staff_name ?? null,
     isActive: row.is_active,
+    isOutOfService: row.is_out_of_service,
+    outOfServiceReason: row.out_of_service_reason,
   };
 }
 
 export async function fetchStations(): Promise<StationRow[]> {
-  const { data, error } = await supabaseClient
-    .from("stations")
-    .select("id, label, category, home_staff_id, is_active, profiles ( full_name )")
-    .order("category", { ascending: true })
-    .order("label", { ascending: true });
-
-  if (error) throw new Error(error.message);
-  return (data ?? []).map(mapStationRow);
+  const { stations } = await apiRequest<{ stations: Parameters<typeof mapStationRow>[0][] }>("/api/admin/workspace/stations");
+  return stations.map(mapStationRow);
 }
 
 export interface StationInput {
@@ -38,23 +45,29 @@ export interface StationInput {
 }
 
 export async function createStation(input: StationInput): Promise<void> {
-  const { error } = await supabaseClient.from("stations").insert({
-    label: input.label,
-    category: input.category,
-    home_staff_id: input.homeStaffId,
+  await apiRequest("/api/admin/workspace/stations", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
-  if (error) throw new Error(error.message);
 }
 
 export async function updateStation(id: string, input: StationInput): Promise<void> {
-  const { error } = await supabaseClient
-    .from("stations")
-    .update({ label: input.label, category: input.category, home_staff_id: input.homeStaffId })
-    .eq("id", id);
-  if (error) throw new Error(error.message);
+  await apiRequest(`/api/admin/workspace/stations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
 }
 
 export async function setStationActive(id: string, isActive: boolean): Promise<void> {
-  const { error } = await supabaseClient.from("stations").update({ is_active: isActive }).eq("id", id);
-  if (error) throw new Error(error.message);
+  await apiRequest(`/api/admin/workspace/stations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ isActive }),
+  });
+}
+
+export async function setStationOutOfService(id: string, isOutOfService: boolean, reason?: string): Promise<void> {
+  await apiRequest(`/api/admin/workspace/stations/${id}/out-of-service`, {
+    method: "PATCH",
+    body: JSON.stringify({ isOutOfService, reason }),
+  });
 }

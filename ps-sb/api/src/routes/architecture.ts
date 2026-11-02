@@ -6,7 +6,7 @@ architectureRouter.get("/", (_req, res) => {
   res.json({
     success: true,
     system: {
-      name: "LynQ",
+      name: "Lyn & Co Salon and Spa",
       fullName: "Queue Management and Predictive Analytics System",
       clientEnterprise: "Lyn & Co Salon and Spa",
       version: "1.0.0",
@@ -124,11 +124,11 @@ architectureRouter.get("/", (_req, res) => {
       application: {
         name: "Application Layer (Business Logic Tier)",
         serverRuntime: "Node.js 20+ LTS / Express.js 5.x (TypeScript)",
-        serverlessRuntime: "Supabase Edge Functions (Deno Runtime)",
+        serverlessRuntime: "Express.js API (Node.js Runtime)",
         modules: [
           {
             name: "Express REST API Server",
-            endpoints: ["/api/catalog", "/api/queue", "/api/forecast", "/api/architecture", "/api/auth"],
+            endpoints: ["/api/catalog", "/api/queue", "/api/forecast", "/api/admin/workspace", "/api/architecture", "/api/auth"],
             responsibilities: "Input validation, CORS handling, rate-limiting (NFR9), error management, and routing",
           },
           {
@@ -140,7 +140,7 @@ architectureRouter.get("/", (_req, res) => {
             responsibilities: "Event-driven asynchronous SMS alerts (joined, almost_your_turn, your_turn) via third-party telecom gateway with audit logging (FR22)",
           },
           {
-            name: "Supabase Edge Functions",
+            name: "Express API Services",
             responsibilities: "Isolated serverless functions for privileged administrative operations (create-staff, login) securing service role credentials from client exposure",
           },
           {
@@ -170,7 +170,10 @@ architectureRouter.get("/", (_req, res) => {
           { name: "forecast_logs", description: "Historical snapshots of computed hourly volume, regression slopes, and MA indicators" },
           { name: "audit_logs", description: "Immutable tracking of administrative actions, queue overrides, and catalog edits" },
           { name: "notifications", description: "Audit trail and delivery statuses of all dispatched milestone SMS alerts" },
-          { name: "promotions", description: "Active discount campaigns, date validity rules, and percentage/fixed discount thresholds" },
+          { name: "promotions", description: "Active discount campaigns, date validity rules, and percentage/fixed discount thresholds for services and packages" },
+          { name: "service_packages", description: "Admin-defined one-time service bundles and prepaid-session offers" },
+          { name: "service_package_items", description: "Services and quantities included in each package" },
+          { name: "customer_package_balances", description: "Salon POS package purchases with paid amount and remaining sessions" },
         ],
       },
       externalServices: {
@@ -217,7 +220,7 @@ architectureRouter.get("/", (_req, res) => {
       { component: "Build & Tooling", technology: "Vite", version: "Vite 8.x", role: "High-performance build tool with Hot Module Replacement (HMR)" },
       { component: "Styling Framework", technology: "Tailwind CSS", version: "Tailwind CSS 3.x", role: "Utility-first CSS delivering responsive layouts across mobile, tablet, and desktop" },
       { component: "Application Backend", technology: "Node.js + Express.js", version: "Node.js 20+ LTS, Express 5.x", role: "Core processing unit executing RESTful APIs, queue prioritization, and transaction routing" },
-      { component: "Serverless Runtime", technology: "Supabase Edge Functions", version: "Deno Runtime", role: "Executes isolated administrative and proxy functions without exposing secrets" },
+      { component: "Application Runtime", technology: "Express.js", version: "Node.js 20+ LTS", role: "Executes administrative and proxy operations through the application API" },
       { component: "Database Management", technology: "Supabase PostgreSQL", version: "PostgreSQL 15+", role: "Cloud relational database managing transactions, referential integrity, and JSONB persistence" },
       { component: "Realtime Engine", technology: "Supabase Realtime", version: "WebSockets (WSS) / PostgreSQL CDC", role: "Pushes instantaneous queue state changes to presentation clients without polling" },
       { component: "Authentication & RBAC", technology: "Supabase Auth + RLS", version: "JWT, Row Level Security", role: "Enforces Role-Based Access Control directly at the database engine level" },
@@ -252,7 +255,7 @@ architectureRouter.get("/", (_req, res) => {
       { subsystem: "Presentation Layer (Staff & Admin Portal)", technologies: "React 19, TypeScript, Chart.js / Tailwind", functionalRequirements: ["FR1-FR6", "FR11", "FR18", "FR25-FR29", "FR31-FR35", "FR37-FR39", "FR41-FR48", "FR51-FR53"], nonFunctionalRequirements: ["NFR1", "NFR5", "NFR8"] },
       { subsystem: "Application Layer (Express REST Server)", technologies: "Node.js 20+, Express.js 5.x, TypeScript", functionalRequirements: ["FR11", "FR18", "FR21", "FR25", "FR26", "FR27", "FR28", "FR29", "FR33", "FR34", "FR35", "FR38", "FR50"], nonFunctionalRequirements: ["NFR1", "NFR2", "NFR6", "NFR9"] },
       { subsystem: "Application Layer (Notification Engine)", technologies: "Node.js, HTTPS REST, SMS Gateway API", functionalRequirements: ["FR13", "FR22"], nonFunctionalRequirements: ["NFR2", "NFR4"] },
-      { subsystem: "Application Layer (Edge Functions)", technologies: "Supabase Edge Functions, Deno Runtime", functionalRequirements: ["FR1", "FR53"], nonFunctionalRequirements: ["NFR1", "NFR4"] },
+      { subsystem: "Application Layer (Express API)", technologies: "Node.js, Express.js, TypeScript", functionalRequirements: ["FR1", "FR53"], nonFunctionalRequirements: ["NFR1", "NFR4"] },
       { subsystem: "Data Layer (PostgreSQL Database Engine)", technologies: "Supabase PostgreSQL 15+, RLS, Tables", functionalRequirements: ["FR1-FR5", "FR10", "FR32", "FR37", "FR39", "FR49", "FR51", "FR52"], nonFunctionalRequirements: ["NFR1", "NFR4", "NFR6"] },
       { subsystem: "Data Layer (In-Database Forecasting)", technologies: "PostgreSQL PL/pgSQL (compute_hybrid_forecast)", functionalRequirements: ["FR14", "FR19", "FR23", "FR25", "FR43", "FR44", "FR45", "FR46", "FR48"], nonFunctionalRequirements: ["NFR3", "NFR6", "NFR7"] },
       { subsystem: "Data Layer (Supabase Realtime Engine)", technologies: "PostgreSQL WAL, CDC, Secure WebSockets (wss://)", functionalRequirements: ["FR19", "FR23", "FR25", "FR26", "FR30", "FR31"], nonFunctionalRequirements: ["NFR2"] },

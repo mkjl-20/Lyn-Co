@@ -4,10 +4,12 @@ import {
   createStation,
   updateStation,
   setStationActive,
+  setStationOutOfService,
   type StationRow,
   type StationInput,
 } from "../services/stationService";
 import { fetchStaffAccounts, type StaffAccountRow } from "../services/adminService";
+import { StatusBadge } from "@/shared/components/StatusBadge";
 
 const emptyForm: StationInput = { label: "", category: "", homeStaffId: null };
 
@@ -37,20 +39,35 @@ export function StationManagement() {
   }, []);
 
   async function handleToggleActive(row: StationRow) {
+    const nextIsActive = !row.isActive;
+    if (!window.confirm(`${nextIsActive ? "Activate" : "Retire"} station "${row.label}"?`)) return;
     const previous = stations;
-    setStations((current) => current.map((s) => (s.id === row.id ? { ...s, isActive: !s.isActive } : s)));
+    setStations((current) => current.map((s) => (s.id === row.id ? { ...s, isActive: nextIsActive } : s)));
     try {
-      await setStationActive(row.id, !row.isActive);
+      await setStationActive(row.id, nextIsActive);
     } catch (error) {
       setStations(previous);
       setErrorMessage(error instanceof Error ? error.message : "Failed to update station.");
     }
   }
 
+  async function handleToggleOutOfService(row: StationRow) {
+    const reason = row.isOutOfService ? undefined : window.prompt(`Why is station "${row.label}" out of service?`)?.trim();
+    if (!row.isOutOfService && !reason) return;
+    if (row.isOutOfService && !window.confirm(`Restore station "${row.label}" to service?`)) return;
+    setErrorMessage(null);
+    try {
+      await setStationOutOfService(row.id, !row.isOutOfService, reason);
+      await loadAll();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to update station availability.");
+    }
+  }
+
   return (
-    <div className="rounded-2xl bg-white p-6 shadow-sm">
+    <div className="rounded-xl border border-mist bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between">
-        <h2 className="font-display text-lg font-semibold text-ink">Stations</h2>
+        <h2 className="font-display text-lg font-semibold text-ink">Staff stations</h2>
         <button
           onClick={() => setIsCreating(true)}
           className="rounded-lg bg-sage-deep px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
@@ -58,7 +75,6 @@ export function StationManagement() {
           Add station
         </button>
       </div>
-
       {errorMessage && (
         <p role="alert" className="mt-3 text-sm text-clay">
           {errorMessage}
@@ -72,7 +88,7 @@ export function StationManagement() {
           ))}
         </div>
       ) : stations.length === 0 ? (
-        <p className="mt-6 text-sm text-ink/50">No stations yet.</p>
+        <p className="mt-6 text-sm text-ink/50">No staff stations yet.</p>
       ) : (
         <ul className="mt-6 max-h-80 space-y-2 overflow-y-auto pr-2">
           {stations.map((station) => (
@@ -85,21 +101,37 @@ export function StationManagement() {
                   {station.label} <span className="text-xs text-ink/40">· {station.category}</span>
                 </p>
                 <p className="text-xs text-ink/50">
-                  {station.homeStaffName ? `Owner: ${station.homeStaffName}` : "Unassigned"}
+                  {station.homeStaffName ? `Assigned to: ${station.homeStaffName}` : "Unassigned"}
                 </p>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <StatusBadge status={station.isOutOfService ? "unavailable" : station.isActive ? "active" : "retired"}>
+                    {station.isOutOfService ? "Out of service" : station.isActive ? "Active" : "Retired"}
+                  </StatusBadge>
+                  {station.isOutOfService && station.outOfServiceReason && (
+                    <span className="text-xs text-danger">{station.outOfServiceReason}</span>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-2">
+                {!station.isOutOfService && (
+                  <button
+                    type="button"
+                    onClick={() => handleToggleActive(station)}
+                    className="rounded-lg border border-mist px-3 py-2 text-xs font-semibold text-ink/70 transition-colors hover:bg-sage-light"
+                  >
+                    {station.isActive ? "Retire" : "Activate"}
+                  </button>
+                )}
                 <button
-                  onClick={() => handleToggleActive(station)}
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                    station.isActive ? "bg-sage-light text-sage-deep" : "bg-clay-light text-clay"
-                  }`}
+                  type="button"
+                  onClick={() => void handleToggleOutOfService(station)}
+                  className="rounded-full border border-mist px-2 py-1 text-xs font-medium text-ink/70 hover:bg-porcelain"
                 >
-                  {station.isActive ? "Active" : "Retired"}
+                  {station.isOutOfService ? "Restore" : "Take offline"}
                 </button>
                 <button
                   onClick={() => setEditingId(station.id)}
-                  className="text-xs font-medium text-ink/60 hover:text-ink"
+                  className="ui-action-edit rounded px-2 py-1 text-xs font-medium"
                 >
                   Edit
                 </button>
@@ -113,6 +145,7 @@ export function StationManagement() {
         <StationFormDialog
           initial={editingId ? stations.find((s) => s.id === editingId) ?? null : null}
           staff={staff}
+          stations={stations}
           onClose={() => {
             setIsCreating(false);
             setEditingId(null);
@@ -131,11 +164,13 @@ export function StationManagement() {
 function StationFormDialog({
   initial,
   staff,
+  stations,
   onClose,
   onSaved,
 }: {
   initial: StationRow | null;
   staff: StaffAccountRow[];
+  stations: StationRow[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -146,10 +181,17 @@ function StationFormDialog({
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const assignedStaffIds = new Set(
+    stations
+      .filter((station) => station.isActive && station.id !== initial?.id && station.homeStaffId)
+      .map((station) => station.homeStaffId)
+  );
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setErrorMessage(null);
+    const action = initial ? "Save changes to" : "Add";
+    if (!window.confirm(`${action} station "${form.label.trim()}"?`)) return;
     setIsSubmitting(true);
     try {
       if (initial) {
@@ -175,14 +217,14 @@ function StationFormDialog({
           {errorMessage && <p className="text-xs text-clay">{errorMessage}</p>}
           <input
             required
-            placeholder="Label (e.g. Station 1)"
+            placeholder="Station label"
             value={form.label}
             onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
             className="w-full rounded-lg border border-mist px-3 py-2 text-sm outline-none focus:border-sage"
           />
           <input
             required
-            placeholder="Category (e.g. Hair, Nails)"
+            placeholder="Staff station category"
             value={form.category}
             onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
             className="w-full rounded-lg border border-mist px-3 py-2 text-sm outline-none focus:border-sage"
@@ -190,15 +232,17 @@ function StationFormDialog({
           <select
             value={form.homeStaffId ?? ""}
             onChange={(e) => setForm((f) => ({ ...f, homeStaffId: e.target.value || null }))}
-            className="w-full rounded-lg border border-mist px-3 py-2 text-sm outline-none focus:border-sage"
+            className="dashboard-filter-control w-full outline-none focus:border-sage"
+            aria-label="Staff member assigned to this station"
           >
-            <option value="">Unassigned</option>
-            {staff.map((member) => (
+            <option value="">Unassigned station</option>
+            {staff.filter((member) => !assignedStaffIds.has(member.id)).map((member) => (
               <option key={member.id} value={member.id}>
                 {member.fullName}
               </option>
             ))}
           </select>
+          <p className="text-xs text-ink/50">Assigned staff can only start services at their mapped station.</p>
           <div className="flex gap-2 pt-2">
             <button
               type="button"

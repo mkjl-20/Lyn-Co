@@ -1,45 +1,61 @@
-import { useMemo } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../shared/context/AuthContext";
+import { StationQueueCounter } from "../../shared/components/StationQueueCounter";
+import { PortalAccountMenu } from "../../shared/components/PortalAccountMenu";
+import { DashboardMetricCard } from "../../shared/components/DashboardMetricCard";
+import { DashboardSkeletonGrid } from "../../shared/components/DashboardSkeletonGrid";
+import { StatusBadge } from "../../shared/components/StatusBadge";
+import { fetchStaffQueue, subscribeToQueueChanges, type QueueEntryRow } from "../admin/services/queueAdminService";
 
 export default function StaffDashboardPage() {
   const navigate = useNavigate();
 
   const { currentUser, logout } = useAuth();
+  const [entries, setEntries] = useState<QueueEntryRow[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const currentUserId = currentUser?.id;
 
-  const today = useMemo(() => {
-    return new Intl.DateTimeFormat("en-PH", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    }).format(new Date());
-  }, []);
+  const loadQueue = useCallback(async () => {
+    if (!currentUserId) return;
+    try {
+      setEntries(await fetchStaffQueue(currentUserId));
+      setErrorMessage(null);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to load your queue.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    // Load initial queue data and subscribe to external realtime updates.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadQueue();
+    return subscribeToQueueChanges(() => void loadQueue());
+  }, [loadQueue]);
 
   async function handleLogout() {
     await logout();
-    navigate("/login");
+    navigate("/lyn-co/login");
   }
 
   if (!currentUser) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-mist">
-        <p className="text-sm text-ink/60">
-          Loading staff account...
-        </p>
+      <div className="pastel-pink-gradient-page flex min-h-screen items-center justify-center p-4">
+        <DashboardSkeletonGrid count={1} variant="panel" label="Loading staff account" className="w-full max-w-sm" />
       </div>
     );
   }
 
-  const staffRoleLabel = currentUser.staffRole
-    ? currentUser.staffRole.charAt(0).toUpperCase() +
-      currentUser.staffRole.slice(1)
-    : "Staff";
+  const waitingCount = entries.filter((entry) => entry.status === "waiting").length;
+  const servingCount = entries.filter((entry) => entry.status === "in_service").length;
 
   return (
-    <div className="min-h-screen bg-mist text-ink">
+    <div className="pastel-pink-gradient-page min-h-screen text-ink">
       {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-mist bg-white/95 backdrop-blur">
+      <header className="sticky top-0 z-40 border-b border-[var(--app-border)] bg-white/70 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between px-4 sm:px-6 lg:px-8">
 
           <div className="flex items-center gap-3">
@@ -51,32 +67,19 @@ export default function StaffDashboardPage() {
               <p className="font-display text-base font-semibold text-ink">
                 LynQ
               </p>
-
-              <p className="text-[10px] uppercase tracking-[0.16em] text-ink/40">
-                Staff Portal
-              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-semibold text-ink">
-                {currentUser.fullName}
-              </p>
-
-              <p className="text-xs text-ink/45">
-                {staffRoleLabel}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="rounded-lg border border-mist bg-white px-3 py-2 text-xs font-medium text-ink transition hover:bg-porcelain"
-            >
-              Log out
-            </button>
-          </div>
+          <PortalAccountMenu
+            fullName={currentUser.fullName}
+            identifier={`@${currentUser.username}`}
+            roleLabel={currentUser.staffRole?.replace(/_/g, " ") ?? "Staff"}
+            isActive={currentUser.isActive}
+            accountHref="/lyn-co/staff/profile"
+            secondaryHref="/lyn-co/staff/history"
+            secondaryLabel="Service history"
+            onSignOut={handleLogout}
+          />
 
         </div>
       </header>
@@ -85,109 +88,71 @@ export default function StaffDashboardPage() {
       <main className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
 
         {/* Greeting */}
-        <section className="mb-6">
-          <p className="mb-1 text-xs font-medium uppercase tracking-[0.16em] text-sage-deep">
-            {today}
-          </p>
-
-          <h1 className="font-display text-2xl font-semibold text-ink sm:text-3xl">
-            Good day, {currentUser.fullName}.
-          </h1>
-
-          <p className="mt-1 text-sm text-ink/50">
-            Manage your assigned services and queue.
-          </p>
-        </section>
+        <h1 className="ui-page-title mb-5">{currentUser.fullName}</h1>
 
         {/* Statistics */}
-        <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-
-          <StatCard
-            label="Current Queue"
-            value="—"
-            description="Waiting customers"
-          />
-
-          <StatCard
-            label="Now Serving"
-            value="—"
-            description="Current customer"
-          />
-
-          <StatCard
-            label="Completed"
-            value="—"
-            description="Today's services"
-          />
-
-          <StatCard
-            label="Avg. Service"
-            value="—"
-            description="Today's average"
-          />
-
-        </section>
+        {isLoading ? (
+          <DashboardSkeletonGrid count={2} label="Loading staff queue counts" className="mb-5 grid-cols-2" />
+        ) : (
+          <section className="mb-5 grid grid-cols-2 gap-3" aria-label="Queue counts">
+            <DashboardMetricCard label="Waiting" value={waitingCount} index="01" />
+            <DashboardMetricCard label="In service" value={servingCount} index="02" />
+          </section>
+        )}
+        <div className="mb-5">
+          <StationQueueCounter />
+        </div>
 
         {/* Main Content */}
-        <section className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="mt-6 w-full">
 
           {/* Queue */}
           <div className="rounded-2xl border border-mist bg-white shadow-sm">
 
             <div className="flex items-center justify-between border-b border-mist px-5 py-4">
               <div>
-                <h2 className="font-display text-base font-semibold">
+                <h2 className="ui-section-title">
                   Current Queue
                 </h2>
 
-                <p className="mt-0.5 text-xs text-ink/45">
-                  Customers assigned to you
-                </p>
               </div>
 
-              <span className="rounded-full bg-porcelain px-3 py-1 text-xs font-semibold text-ink/50">
-                No data
+              <span className="rounded-full bg-porcelain px-3 py-1 text-xs font-semibold text-ink/70" aria-live="polite">
+                {isLoading ? "Loading" : entries.length}
               </span>
             </div>
 
             {/* Empty state */}
-            <div className="flex min-h-[280px] items-center justify-center px-5">
-              <div className="text-center">
-
-                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-porcelain text-ink/30">
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="22"
-                    height="22"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                  >
-                    <path d="M8 6h13" />
-                    <path d="M8 12h13" />
-                    <path d="M8 18h13" />
-                    <path d="M3 6h.01" />
-                    <path d="M3 12h.01" />
-                    <path d="M3 18h.01" />
-                  </svg>
-                </div>
-
-                <p className="mt-4 text-sm font-semibold text-ink">
-                  No customers in your queue
-                </p>
-
-                <p className="mx-auto mt-1 max-w-xs text-xs text-ink/45">
-                  Customers assigned to your service will appear here.
-                </p>
-
+            {errorMessage ? (
+              <div className="flex min-h-40 flex-wrap items-center justify-center gap-3 p-5 text-center" role="alert">
+                <p className="text-sm text-clay">{errorMessage}</p>
+                <button type="button" onClick={() => void loadQueue()} className="min-h-11 rounded-md border border-clay/40 px-4 text-sm font-semibold text-clay hover:bg-clay-light">Retry</button>
               </div>
-            </div>
+            ) : isLoading ? (
+              <DashboardSkeletonGrid count={3} variant="queue" label="Loading staff queue" className="gap-0 p-4" />
+            ) : entries.length === 0 ? (
+              <div className="flex min-h-40 items-center justify-center px-5 text-center">
+                <p className="text-sm font-semibold text-ink/60">No customers in your queue</p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-mist">
+                {entries.slice(0, 5).map((entry) => (
+                  <li key={entry.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">{entry.customerName}</p>
+                      <p className="text-xs text-ink/60">{entry.status === "waiting" ? `Position ${entry.position ?? "—"}` : "In service"}</p>
+                    </div>
+                    <StatusBadge status={entry.status}>{entry.status === "waiting" ? "Waiting" : "In service"}</StatusBadge>
+                  </li>
+                ))}
+              </ul>
+            )}
 
             <div className="border-t border-mist p-4">
               <button
                 type="button"
-                onClick={() => navigate("/staff/queue")}
-                className="w-full rounded-lg border border-mist bg-white py-2.5 text-xs font-semibold text-ink transition hover:bg-porcelain"
+                onClick={() => navigate("/lyn-co/staff/queue")}
+                className="min-h-11 w-full rounded-lg border border-mist bg-white py-2.5 text-sm font-semibold text-ink transition hover:bg-porcelain"
               >
                 View Full Queue
               </button>
@@ -195,216 +160,9 @@ export default function StaffDashboardPage() {
 
           </div>
 
-          {/* Right Panel */}
-          <div className="space-y-6">
-
-            {/* Current Service */}
-            <div className="rounded-2xl border border-mist bg-white p-5 shadow-sm">
-
-              <div className="mb-4">
-                <p className="text-xs font-medium uppercase tracking-[0.14em] text-sage-deep">
-                  Current Service
-                </p>
-
-                <h2 className="mt-1 font-display text-xl font-semibold">
-                  No active service
-                </h2>
-              </div>
-
-              <div className="rounded-xl bg-porcelain p-4">
-
-                <p className="text-sm font-semibold text-ink/50">
-                  No customer currently being served
-                </p>
-
-                <p className="mt-1 text-xs text-ink/40">
-                  Your active customer will appear here.
-                </p>
-
-              </div>
-
-              <button
-                type="button"
-                onClick={() => navigate("/staff/queue")}
-                className="mt-4 w-full rounded-lg bg-sage-deep py-2.5 text-xs font-semibold text-white transition hover:opacity-90"
-              >
-                Open Queue
-              </button>
-
-            </div>
-
-            {/* Quick Actions */}
-            <div className="rounded-2xl border border-mist bg-white p-5 shadow-sm">
-
-              <h2 className="font-display text-base font-semibold">
-                Quick Actions
-              </h2>
-
-              <div className="mt-4 grid gap-2">
-
-                <QuickAction
-                  title="View Queue"
-                  description="See your assigned customers"
-                  onClick={() => navigate("/staff/queue")}
-                />
-
-                <QuickAction
-                  title="Service History"
-                  description="View your completed services"
-                  onClick={() => navigate("/staff/history")}
-                />
-
-                <QuickAction
-                  title="My Profile"
-                  description="View your staff account"
-                  onClick={() => navigate("/staff/profile")}
-                />
-
-              </div>
-
-            </div>
-
-          </div>
-
-        </section>
-
-        {/* Today's Summary */}
-        <section className="mt-6 rounded-2xl border border-mist bg-white p-5 shadow-sm">
-
-          <div className="mb-5">
-            <h2 className="font-display text-base font-semibold">
-              Today's Summary
-            </h2>
-
-            <p className="mt-0.5 text-xs text-ink/45">
-              Your service performance for today
-            </p>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-3">
-
-            <SummaryItem
-              label="Customers Served"
-              value="—"
-            />
-
-            <SummaryItem
-              label="Average Service Time"
-              value="—"
-            />
-
-            <SummaryItem
-              label="Estimated Remaining"
-              value="—"
-            />
-
-          </div>
-
         </section>
 
       </main>
-    </div>
-  );
-}
-
-/* =========================================================
-   STAT CARD
-========================================================= */
-
-interface StatCardProps {
-  label: string;
-  value: string;
-  description: string;
-}
-
-function StatCard({
-  label,
-  value,
-  description,
-}: StatCardProps) {
-  return (
-    <div className="rounded-2xl border border-mist bg-white p-4 shadow-sm">
-
-      <p className="text-xs text-ink/45">
-        {label}
-      </p>
-
-      <p className="mt-2 font-display text-xl font-semibold text-ink sm:text-2xl">
-        {value}
-      </p>
-
-      <p className="mt-1 text-[11px] text-ink/40">
-        {description}
-      </p>
-
-    </div>
-  );
-}
-
-/* =========================================================
-   QUICK ACTION
-========================================================= */
-
-interface QuickActionProps {
-  title: string;
-  description: string;
-  onClick: () => void;
-}
-
-function QuickAction({
-  title,
-  description,
-  onClick,
-}: QuickActionProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex items-center justify-between rounded-xl border border-mist p-3 text-left transition hover:bg-porcelain"
-    >
-      <div>
-
-        <p className="text-xs font-semibold text-ink">
-          {title}
-        </p>
-
-        <p className="mt-0.5 text-[11px] text-ink/40">
-          {description}
-        </p>
-
-      </div>
-
-      <span className="text-ink/30">
-        →
-      </span>
-    </button>
-  );
-}
-
-/* =========================================================
-   SUMMARY
-========================================================= */
-
-interface SummaryItemProps {
-  label: string;
-  value: string;
-}
-
-function SummaryItem({
-  label,
-  value,
-}: SummaryItemProps) {
-  return (
-    <div className="rounded-xl bg-porcelain p-4">
-
-      <p className="text-xs text-ink/45">
-        {label}
-      </p>
-
-      <p className="mt-2 font-display text-xl font-semibold text-ink">
-        {value}
-      </p>
-
     </div>
   );
 }

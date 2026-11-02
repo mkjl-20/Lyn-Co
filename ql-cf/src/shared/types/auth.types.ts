@@ -1,5 +1,5 @@
 export type AccountRole = "admin" | "staff";
-export type StaffRole = "receptionist" | "hairstylist" | "manicurist" | "pedicurist";
+export type StaffRole = string;
 
 export interface UserProfile {
   id: string;

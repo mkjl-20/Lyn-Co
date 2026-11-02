@@ -1,160 +1,142 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/shared/context/AuthContext";
+import { useSalonBranding } from "@/shared/context/SalonBrandingContext";
+import { PasswordVisibilityButton } from "@/shared/components/PasswordVisibilityButton";
+import { SalonLogoImage } from "@/shared/components/SalonLogoImage";
 
 export function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({});
+  const [credentialsError, setCredentialsError] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { loginWithUsername, } = useAuth();
+  const { logoDataUrl } = useSalonBranding();
   const navigate = useNavigate();
+  const location = useLocation();
 
   async function handleSubmit(event: FormEvent) {
-  event.preventDefault();
-  setErrorMessage(null);
-  setIsSubmitting(true);
+    event.preventDefault();
+    if (isSubmitting) return;
+    setFieldErrors({});
+    setCredentialsError(false);
+    if (!username.trim()) {
+      setFieldErrors({ username: "Please enter your username." });
+      return;
+    }
+    if (!password) {
+      setFieldErrors({ password: "Please enter your password." });
+      return;
+    }
+    setIsSubmitting(true);
 
-  try {
-    const profile = await loginWithUsername({ username, password });
-    navigate(profile.accountRole === "admin" ? "/admin" : "/staff");
-  } catch (error) {
-    setErrorMessage(error instanceof Error ? error.message : "Login failed.");
-  } finally {
-    setIsSubmitting(false);
+    try {
+      const profile = await loginWithUsername({ username, password });
+      navigate(profile.accountRole === "admin" ? "/lyn-co/admin" : "/lyn-co/staff");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Login failed.";
+      const isCredentialError = /password|username|credential/i.test(message);
+      setCredentialsError(isCredentialError);
+      setFieldErrors({ password: isCredentialError ? "Username or password is incorrect." : message });
+    } finally {
+      setIsSubmitting(false);
+    }
   }
-}
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-mist p-3 sm:p-6">
-      {/* Hide native browser password-reveal icons (Edge/Chrome) so only our custom eye button shows */}
+    <div className="login-page flex min-h-screen items-center justify-center bg-[var(--app-canvas)] p-4 sm:p-6">
       <style>{`
-        input[type="password"]::-ms-reveal,
-        input[type="password"]::-ms-clear {
-          display: none;
-        }
-        input[type="password"]::-webkit-credentials-auto-fill-button,
-        input[type="password"]::-webkit-strong-password-auto-fill-button {
-          visibility: hidden;
-          display: none !important;
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover,
+        input:-webkit-autofill:focus {
+          -webkit-box-shadow: 0 0 0 1000px var(--app-canvas) inset;
+          -webkit-text-fill-color: var(--color-ink);
+          caret-color: var(--color-ink);
+          transition: background-color 9999s ease-out;
         }
       `}</style>
 
-      <div className="flex w-full max-w-[846px] min-h-[clamp(380px,90vh,460px)] flex-col gap-3 overflow-hidden rounded-2xl bg-white shadow-xl sm:gap-4 sm:rounded-3xl lg:flex-row">
-        {/* Left — brand panel: banner on mobile (image goes here later), side panel on desktop */}
-        <div className="relative flex h-32 w-full flex-col items-center justify-center overflow-hidden rounded-2xl bg-white p-4 text-center text-white xs:h-36 sm:h-44 sm:rounded-3xl sm:p-6 lg:h-auto lg:w-3/5 lg:p-10">
-          {/* Decorative shapes — sit behind everything in this panel */}
-
-          {/* Inset framed design element — gives the empty panel real structure */}
-          <div className="relative z-20 flex h-full w-full items-center justify-center rounded-xl border border-white/20 bg-sage p-3 sm:rounded-2xl sm:p-4 lg:rounded-3xl lg:p-6">
-            {/* TODO: image goes here — will replace this inner frame's content */}
+      <div className="login-card flex w-full max-w-[420px] flex-col items-center justify-start gap-1 overflow-hidden rounded-[24px] bg-white px-4 pb-6 pt-4 shadow-[0_16px_28px_rgba(0,0,0,0.12)] sm:gap-1 sm:px-6 sm:pb-8 sm:pt-6 lg:min-h-[496px] lg:max-w-[846px] lg:flex-row lg:justify-between lg:gap-0 lg:p-10">
+        <div className="login-logo-panel flex h-32 w-full max-w-[240px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] bg-white p-4 lg:aspect-square lg:h-auto lg:max-w-[417px] lg:p-5 lg:w-[55%]">
+          <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-[18px] bg-white p-2 lg:p-5">
+            {logoDataUrl ? (
+              <SalonLogoImage src={logoDataUrl} alt="Salon logo" className="h-full w-full rounded-2xl object-contain" />
+            ) : (
+              <div className="text-center text-ink">
+                <div aria-hidden="true" className="font-display text-5xl font-semibold tracking-tight">L&amp;C</div>
+                <p className="mt-2 text-sm font-medium">Lyn &amp; Co Salon and Spa</p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Right — login form */}
-        <div className="relative flex w-full flex-col items-center justify-center overflow-hidden px-4 py-6 xs:px-5 sm:px-10 sm:py-10 lg:w-2/5 lg:px-16 lg:py-16 [@media(max-height:550px)]:py-4">
-          {/* Decorative shape — sits behind the form content */}
-          {/* Form content — sits above the decorative shapes */}
-          <div className="relative z-10 w-full max-w-[320px] sm:max-w-[280px]">
-            <h1 className="mb-4 text-center font-display text-base font-semibold text-ink sm:mb-6 sm:text-lg">
-              Sign in to LynQ
+        <div className="flex w-full items-center justify-center lg:w-[45%]">
+          <div className="w-full max-w-[205px]">
+            <h1 className="mb-4 text-center font-display text-lg font-semibold text-ink lg:mb-6">
+              {location.pathname === "/lyn-co/login" ? "Lyn & Co sign in" : "Sign in"}
             </h1>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {errorMessage && (
-                <p role="alert" className="text-center text-xs text-clay">
-                  {errorMessage}
-                </p>
-              )}
-
-              {/* Username — floating label */}
-              <div className="relative rounded-lg border border-mist bg-porcelain/40">
+            <form onSubmit={handleSubmit} noValidate autoComplete="off" className="space-y-3 lg:space-y-4">
+              <div className={`login-field-control relative h-12 rounded-[10px] border bg-white transition focus-within:border-[#777] focus-within:ring-1 focus-within:ring-[#999]/20 ${fieldErrors.username || credentialsError ? "has-error border-danger" : "border-[#d6d6d6]"}`}>
                 <input
                   id="username"
                   type="text"
                   value={username}
-                  onChange={(event) => setUsername(event.target.value)}
+                  onChange={(event) => {
+                    setUsername(event.target.value);
+                    setFieldErrors({});
+                    setCredentialsError(false);
+                  }}
                   placeholder=" "
-                  autoComplete="username"
+                  autoComplete="off"
                   required
-                  className="peer w-full bg-transparent px-3 pb-2 pt-4 text-base text-ink outline-none sm:text-sm"
+                  aria-invalid={Boolean(fieldErrors.username || credentialsError)}
+                  aria-describedby={fieldErrors.username ? "username-error" : credentialsError ? "password-error" : undefined}
+                  className="peer h-full w-full appearance-none bg-transparent px-4 py-3 text-sm leading-5 text-ink outline-none"
                 />
-                <label
-                  htmlFor="username"
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 px-1 text-sm text-ink/40 transition-all duration-150
-                    peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:text-[10px]
-                    peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-[10px]"
-                >
+                <label htmlFor="username" className="login-field-label pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 px-1 text-sm text-[#999] transition-all duration-150 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:bg-white peer-focus:text-[10px] peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:bg-white peer-[:not(:placeholder-shown)]:text-[10px]">
                   Username
                 </label>
               </div>
+              {fieldErrors.username && <p id="username-error" role="alert" className="login-field-error -mt-2 text-xs text-danger">{fieldErrors.username}</p>}
 
-              {/* Password — floating label */}
-              <div className="relative rounded-lg border border-mist bg-porcelain/40">
-                <input
+              <div className={`login-field-control relative h-12 rounded-[10px] border bg-white transition focus-within:border-[#777] focus-within:ring-1 focus-within:ring-[#999]/20 ${fieldErrors.password ? "has-error border-danger" : "border-[#d6d6d6]"}`}>
+               <input
                   id="password"
                   type={showPassword ? "text" : "password"}
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(event) => {
+                    setPassword(event.target.value);
+                    setFieldErrors({});
+                    setCredentialsError(false);
+                  }}
                   placeholder=" "
-                  autoComplete="current-password"
+                  autoComplete="new-password"
                   required
-                  className="peer w-full bg-transparent px-3 pb-2 pt-4 pr-9 text-base text-ink outline-none sm:text-sm"
+                  aria-invalid={Boolean(fieldErrors.password)}
+                  aria-describedby={fieldErrors.password ? "password-error" : undefined}
+                  className="peer h-full w-full appearance-none rounded-[10px] bg-transparent px-4 py-3 pr-11 text-sm leading-5 text-ink outline-none"
                 />
-                <label
-                  htmlFor="password"
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 px-1 text-sm text-ink/40 transition-all duration-150
-                    peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:text-[10px]
-                    peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-[10px]"
-                >
+                <label htmlFor="password" className="login-field-label pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 px-1 text-sm text-[#999] transition-all duration-150 peer-focus:top-0 peer-focus:-translate-y-1/2 peer-focus:bg-white peer-focus:text-[10px] peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:bg-white peer-[:not(:placeholder-shown)]:text-[10px]">
                   Password
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                  aria-pressed={showPassword}
-                  title={showPassword ? "Hide password" : "Show password"}
-                  className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-ink/40 transition-colors hover:bg-sage-light hover:text-sage-deep focus:outline-none focus:ring-2 focus:ring-sage-light"
-                >
-                  {showPassword ? (
-                    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                      <path d="M3 3l18 18" fill="none" stroke="currentColor" strokeWidth="1.8" />
-                      <path
-                        d="M10.6 6.3A9.8 9.8 0 0 1 12 6c6 0 9 6 9 6a16 16 0 0 1-2.6 3.6"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                      />
-                      <path
-                        d="M6.7 8.7A15.9 15.9 0 0 0 3 12s3 6 9 6c1.1 0 2.2-.2 3.2-.5"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                      />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                      <path
-                        d="M3 12s3-6 9-6 9 6 9 6-3 6-9 6-9-6-9-6Z"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                      />
-                      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-                    </svg>
-                  )}
-                </button>
+                <PasswordVisibilityButton
+                  visible={showPassword}
+                  onToggle={() => setShowPassword((previous) => !previous)}
+                />
               </div>
+              {fieldErrors.password && <p id="password-error" role="alert" className="login-field-error -mt-2 text-xs text-danger">{fieldErrors.password}</p>}
 
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="!mt-6 w-full rounded-lg bg-sage-deep py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40 sm:!mt-5 sm:py-2"
+                aria-busy={isSubmitting}
+                className="!mt-5 mb-2 block h-11 w-full appearance-none rounded-[9px] bg-[#252525] py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-[#111] disabled:cursor-wait disabled:opacity-50"
               >
-                {isSubmitting ? "Signing in…" : "Log in"}
+                <span aria-live="polite">{isSubmitting ? "Signing in..." : "Log in"}</span>
               </button>
             </form>
           </div>

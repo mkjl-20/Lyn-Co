@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import supabase from "../../../shared/lib/supabaseClient";
+import { apiRequest } from "../../../shared/lib/apiClient";
+import { PasswordVisibilityButton } from "../../../shared/components/PasswordVisibilityButton";
+import { StatusBadge } from "../../../shared/components/StatusBadge";
+import { PaginationControls } from "../../../shared/components/PaginationControls";
+import { paginateItems } from "../../../shared/lib/pagination";
 
 type StaffRole =
   | "receptionist"
   | "hairstylist"
+  | "nail_technician"
   | "manicurist"
   | "pedicurist";
 
@@ -50,12 +57,17 @@ export default function StaffManagementPage() {
 
   const [loadingStaff, setLoadingStaff] =
     useState(true);
+  const [staffPage, setStaffPage] = useState(1);
 
   const [error, setError] = useState("");
 
   const [success, setSuccess] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [editingStaff, setEditingStaff] = useState<Staff | null>(null);
+  const [editFullName, setEditFullName] = useState("");
+  const [editStaffRole, setEditStaffRole] = useState<StaffRole>("hairstylist");
+  const [isSavingStaff, setIsSavingStaff] = useState(false);
 
   // ==========================================
   // LOAD STAFF
@@ -132,11 +144,14 @@ export default function StaffManagementPage() {
 
       const matchesRole =
         roleFilter === "all" ||
-        member.staff_role === roleFilter;
+        (roleFilter === "manicurist"
+          ? ["nail_technician", "manicurist", "pedicurist"].includes(member.staff_role ?? "")
+          : member.staff_role === roleFilter);
 
       return matchesSearch && matchesRole;
     });
   }, [staff, search, roleFilter]);
+  const paginatedStaff = paginateItems(filteredStaff, staffPage);
 
   // ==========================================
   // FORM CHANGE
@@ -246,6 +261,12 @@ export default function StaffManagementPage() {
     setLoading(true);
 
     try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) {
+        throw new Error("Your admin session has expired. Please sign in again.");
+      }
+
       console.log(
         "Creating staff account:",
         {
@@ -255,44 +276,23 @@ export default function StaffManagementPage() {
         }
       );
 
-      const {
-        data,
-        error: functionError,
-      } = await supabase.functions.invoke(
-        "create-staff",
-        {
-          body: {
-            username,
-            full_name: fullName,
-            staff_role: form.staff_role,
-            password: form.password,
-          },
-        }
-      );
+      const data = await apiRequest<{ success?: boolean; message?: string; warning?: string }>("/api/admin/staff", {
+        method: "POST",
+        body: JSON.stringify({
+          username,
+          full_name: fullName,
+          staff_role: form.staff_role,
+          password: form.password,
+        }),
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
 
       console.log(
         "Create staff response:",
         data
       );
-
-      if (functionError) {
-        console.error(
-          "Create staff function error:",
-          functionError
-        );
-
-        throw new Error(
-          functionError.message ||
-            "Unable to create staff account."
-        );
-      }
-
-      if (!data?.success) {
-        throw new Error(
-          data?.error ||
-            "Unable to create staff account."
-        );
-      }
 
       // -------------------------------
       // SUCCESS
@@ -307,7 +307,7 @@ export default function StaffManagementPage() {
       setSuccess(
         `${fullName} was successfully added as a ${formatStaffRole(
           form.staff_role
-        )}.`
+        )}.${data.warning ? ` ${data.warning}` : ""}`
       );
     } catch (err) {
       console.error(
@@ -322,6 +322,80 @@ export default function StaffManagementPage() {
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openEditStaff = (member: Staff) => {
+    setError("");
+    setEditingStaff(member);
+    setEditFullName(member.full_name);
+    setEditStaffRole(normalizeStaffRole(member.staff_role));
+  };
+
+  const handleUpdateStaff = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editingStaff) return;
+
+    const fullName = editFullName.trim();
+    if (!fullName || fullName.length > 120) {
+      setError("Enter a staff name between 1 and 120 characters.");
+      return;
+    }
+
+    setIsSavingStaff(true);
+    setError("");
+    setSuccess("");
+    try {
+      await apiRequest<{ success: boolean }>(`/api/admin/staff/${editingStaff.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ full_name: fullName, staff_role: editStaffRole }),
+      });
+      setEditingStaff(null);
+      setSuccess(`Updated staff account for ${fullName}.`);
+      await loadStaff();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update staff account.");
+    } finally {
+      setIsSavingStaff(false);
+    }
+  };
+
+  const handleToggleStaffStatus = async (member: Staff) => {
+    const isActive = !member.is_active;
+    const action = isActive ? "activate" : "deactivate";
+    if (!window.confirm(`Are you sure you want to ${action} ${member.full_name}'s account?`)) return;
+
+    setError("");
+    setSuccess("");
+    try {
+      await apiRequest<{ success: boolean }>(`/api/admin/staff/${member.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_active: isActive }),
+      });
+      setSuccess(`${member.full_name}'s account was ${isActive ? "activated" : "deactivated"}.`);
+      await loadStaff();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update staff account status.");
+    }
+  };
+
+  const handleResetStaffPassword = async (member: Staff) => {
+    if (!window.confirm(`Reset ${member.full_name}'s password? Their current password will stop working and they must choose a new one at next sign-in.`)) return;
+    setError("");
+    setSuccess("");
+    try {
+      const result = await apiRequest<{
+        success: boolean;
+        message: string;
+        temporaryPassword: string;
+        warning?: string;
+      }>(`/api/admin/staff/${member.id}/password-reset`, { method: "POST" });
+      setSuccess(`${result.message}${result.warning ? ` ${result.warning}` : ""}`);
+      window.alert(
+        `Temporary password for ${member.username}:\n\n${result.temporaryPassword}\n\nShare it securely. It will only be shown once and must be changed at next sign-in.`,
+      );
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to reset the staff password.");
     }
   };
 
@@ -344,26 +418,43 @@ export default function StaffManagementPage() {
   // ==========================================
 
   return (
-    <div className="min-h-screen bg-[#eef1ed] text-ink">
+    <div className="pastel-pink-gradient-page min-h-screen text-ink">
+      {(error || success) && createPortal(
+        <div className="pointer-events-none fixed inset-x-0 top-4 z-[200] flex justify-center px-4">
+          <div
+            role={error ? "alert" : "status"}
+            className={`pointer-events-auto flex w-full max-w-lg items-start gap-3 rounded-xl border p-4 shadow-xl ${
+              error
+                ? "border-clay/25 bg-white text-clay"
+                : "border-success/25 bg-white text-success"
+            }`}
+          >
+            <span className="flex-1 text-sm font-medium">{error || success}</span>
+            <button
+              type="button"
+              onClick={() => {
+                if (error) setError("");
+                else setSuccess("");
+              }}
+              aria-label="Dismiss notification"
+              className="shrink-0 rounded px-2 text-sm font-semibold opacity-70 hover:opacity-100"
+            >
+              ×
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {/* ======================================
           PAGE HEADER
       ====================================== */}
 
-      <div className="border-b border-mist bg-white">
+      <div>
 
-        <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6">
+        <div className="mx-auto max-w-6xl px-4 py-3 sm:px-6">
 
-          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-
-            <div className="flex items-center gap-4">
-
-              <div>
-                <h1 className="font-display text-2xl font-semibold text-ink">Staff Management</h1>
-
-              </div>
-
-            </div>
+          <div className="flex flex-col gap-5 sm:flex-row sm:justify-end">
 
             <button
               type="button"
@@ -402,58 +493,6 @@ export default function StaffManagementPage() {
       ====================================== */}
 
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
-
-        {/* ====================================
-            SUCCESS MESSAGE
-        ==================================== */}
-
-        {success && (
-          <div className="mb-6 flex items-start gap-3 rounded-xl border border-sage/20 bg-sage-light p-4 text-sage-deep">
-
-            <div className="flex-1">
-
-              <p className="text-sm font-semibold">
-                Staff account created
-              </p>
-
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setSuccess("")}
-              className="text-xs font-semibold text-sage hover:text-sage-deep"
-            >
-              Dismiss
-            </button>
-
-          </div>
-        )}
-
-        {/* ====================================
-            ERROR MESSAGE
-        ==================================== */}
-
-        {error && !showCreateModal && (
-          <div className="mb-6 flex items-start gap-3 rounded-xl border border-clay/20 bg-clay-light p-4 text-clay">
-
-            <div className="flex-1">
-
-              <p className="text-sm font-semibold">
-                Something went wrong
-              </p>
-
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setError("")}
-              className="text-xs font-semibold text-clay"
-            >
-              Dismiss
-            </button>
-
-          </div>
-        )}
 
         {/* ====================================
             STATISTICS
@@ -575,25 +614,12 @@ export default function StaffManagementPage() {
               <input
                 type="search"
                 value={search}
-                onChange={(event) =>
-                  setSearch(
-                    event.target.value
-                  )
-                }
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setStaffPage(1);
+                }}
                 placeholder="Search staff..."
-                  className="
-                  w-full rounded-lg
-                  border border-mist
-                  bg-white
-                  py-2.5 px-4
-                  text-sm text-ink
-                  outline-none
-                  transition
-                  placeholder:text-gray-400
-                  focus:border-sage
-                  focus:ring-2
-                  focus:ring-sage-light
-                "
+                className="dashboard-filter-control w-full outline-none transition placeholder:text-gray-400 focus:border-sage focus:ring-2 focus:ring-sage-light"
               />
 
             </div>
@@ -602,24 +628,11 @@ export default function StaffManagementPage() {
 
             <select
               value={roleFilter}
-              onChange={(event) =>
-                setRoleFilter(
-                  event.target.value as
-                    | "all"
-                    | StaffRole
-                )
-              }
-              className="
-                rounded-lg
-                border border-mist
-                bg-white
-                px-4 py-2.5
-                text-sm text-ink
-                outline-none
-                focus:border-sage
-                focus:ring-2
-                focus:ring-sage-light
-              "
+              onChange={(event) => {
+                setRoleFilter(event.target.value as "all" | StaffRole);
+                setStaffPage(1);
+              }}
+              className="dashboard-filter-control w-full outline-none focus:border-sage focus:ring-2 focus:ring-sage-light sm:w-48"
             >
               <option value="all">
                 All Staff Roles
@@ -629,13 +642,7 @@ export default function StaffManagementPage() {
                 Hairstylist
               </option>
 
-              <option value="manicurist">
-                Manicurist
-              </option>
-
-              <option value="pedicurist">
-                Pedicurist
-              </option>
+              <option value="manicurist">Nail Technician</option>
 
               <option value="receptionist">
                 Receptionist
@@ -664,9 +671,9 @@ export default function StaffManagementPage() {
                TABLE
             ================================== */
 
-            <div className="max-h-[calc(100vh-23rem)] overflow-auto">
+            <div className="overflow-x-hidden">
 
-              <table className="w-full min-w-[700px]">
+              <table className="admin-responsive-table w-full table-fixed text-sm">
 
                 <thead>
                   <tr className="border-b border-mist bg-gray-50/70">
@@ -751,7 +758,7 @@ export default function StaffManagementPage() {
 
                   ) : (
 
-                    filteredStaff.map(
+                    paginatedStaff.items.map(
                       (member) => (
                         <tr
                           key={member.id}
@@ -760,7 +767,7 @@ export default function StaffManagementPage() {
 
                           {/* STAFF */}
 
-                          <td className="px-6 py-4">
+                          <td data-label="Staff Member" className="px-6 py-4">
 
                             <div className="flex items-center gap-3">
 
@@ -786,7 +793,7 @@ export default function StaffManagementPage() {
 
                           {/* USERNAME */}
 
-                          <td className="px-6 py-4">
+                          <td data-label="Username" className="px-6 py-4">
 
                             <span className="rounded-md bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600">
                               @
@@ -799,7 +806,7 @@ export default function StaffManagementPage() {
 
                           {/* ROLE */}
 
-                          <td className="px-6 py-4">
+                          <td data-label="Role" className="px-6 py-4">
 
                             <span
                               className={`
@@ -820,60 +827,42 @@ export default function StaffManagementPage() {
 
                           {/* STATUS */}
 
-                          <td className="px-6 py-4">
+                          <td data-label="Status" className="px-6 py-4">
 
-                            <span
-                              className={`
-                                inline-flex items-center gap-2
-                                rounded-full
-                                px-3 py-1.5
-                                text-xs font-semibold
-                                ${
-                                  member.is_active
-                                    ? "bg-sage-light text-sage-deep"
-                                    : "bg-gray-100 text-gray-500"
-                                }
-                              `}
-                            >
-
-                              <span
-                                className={`
-                                  h-1.5 w-1.5 rounded-full
-                                  ${
-                                    member.is_active
-                                      ? "bg-sage"
-                                      : "bg-gray-400"
-                                  }
-                                `}
-                              />
-
+                            <StatusBadge status={member.is_active ? "active" : "inactive"}>
                               {member.is_active
                                 ? "Active"
                                 : "Inactive"}
-
-                            </span>
+                            </StatusBadge>
 
                           </td>
 
                           {/* ACTION */}
 
-                          <td className="px-6 py-4 text-right">
-
-                            <button
-                              type="button"
-                              className="
-                                rounded-lg
-                                px-3 py-2
-                                text-lg
-                                text-gray-400
-                                transition
-                                hover:bg-sage-light
-                                hover:text-sage-deep
-                              "
-                              title="More actions"
-                            >
-                              ⋮
-                            </button>
+                          <td data-label="Actions" className="px-6 py-4 text-right">
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openEditStaff(member)}
+                                className="ui-action-edit rounded-lg border border-mist px-3 py-2 text-xs font-semibold transition"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleResetStaffPassword(member)}
+                                className="rounded-lg border border-gold/40 px-3 py-2 text-xs font-semibold text-ink/75 transition hover:bg-gold-light"
+                              >
+                                Reset password
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleStaffStatus(member)}
+                                className={`${member.is_active ? "ui-action-danger" : "ui-action-positive"} rounded-lg border border-mist px-3 py-2 text-xs font-semibold transition`}
+                              >
+                                {member.is_active ? "Deactivate" : "Activate"}
+                              </button>
+                            </div>
 
                           </td>
 
@@ -889,6 +878,17 @@ export default function StaffManagementPage() {
 
             </div>
           )}
+          {!loadingStaff && filteredStaff.length > 0 && (
+            <PaginationControls
+              page={paginatedStaff.page}
+              totalPages={paginatedStaff.totalPages}
+              firstItem={paginatedStaff.firstItem}
+              lastItem={paginatedStaff.lastItem}
+              totalItems={filteredStaff.length}
+              onPageChange={setStaffPage}
+              label="Staff"
+            />
+          )}
 
         </section>
 
@@ -898,14 +898,82 @@ export default function StaffManagementPage() {
           CREATE STAFF MODAL
       ====================================== */}
 
-      {showCreateModal && (
+      {editingStaff && (
+        createPortal(
+          <div
+            className="fixed inset-0 z-[110] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-sm"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !isSavingStaff) setEditingStaff(null);
+            }}
+          >
+            <div
+              className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="edit-staff-title"
+            >
+              <h2 id="edit-staff-title" className="font-display text-xl font-semibold text-ink">Edit staff account</h2>
+              <form onSubmit={handleUpdateStaff} className="mt-5 space-y-4">
+                <div>
+                  <label htmlFor="edit-staff-name" className="mb-1 block text-sm font-medium text-ink">Full name</label>
+                  <input
+                    id="edit-staff-name"
+                    value={editFullName}
+                    onChange={(event) => setEditFullName(event.target.value)}
+                    maxLength={120}
+                    required
+                    className="w-full rounded-lg border border-mist px-3 py-2 text-sm text-ink outline-none focus:border-sage"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-staff-role" className="mb-1 block text-sm font-medium text-ink">Staff role</label>
+                  <select
+                    id="edit-staff-role"
+                    value={editStaffRole}
+                    onChange={(event) => setEditStaffRole(event.target.value as StaffRole)}
+                    className="w-full rounded-lg border border-mist px-3 py-2 text-sm text-ink outline-none focus:border-sage"
+                  >
+                    <option value="hairstylist">Hairstylist</option>
+                    <option value="manicurist">Nail Technician</option>
+                    <option value="receptionist">Receptionist</option>
+                  </select>
+                </div>
+                {error && <p role="alert" className="text-sm text-clay">{error}</p>}
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingStaff(null);
+                      setError("");
+                    }}
+                    disabled={isSavingStaff}
+                    className="rounded-lg border border-mist px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingStaff}
+                    className="rounded-lg bg-sage px-4 py-2 text-sm font-semibold text-white hover:bg-sage-deep disabled:opacity-50"
+                  >
+                    {isSavingStaff ? "Saving…" : "Save changes"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+
+      {showCreateModal && createPortal(
 
         <div
           className="
-            fixed inset-0 z-50
+            fixed inset-0 z-[110]
             flex items-center justify-center
             bg-ink/50
-            p-4
+            p-3 sm:p-4
             backdrop-blur-sm
           "
           onMouseDown={(event) => {
@@ -920,8 +988,8 @@ export default function StaffManagementPage() {
 
           <div
             className="
-              flex w-full max-w-2xl
-              max-h-[calc(100vh-2rem)]
+              flex w-full max-w-xl
+              max-h-[calc(100dvh-1.5rem)]
               flex-col
               overflow-hidden
               rounded-2xl
@@ -935,11 +1003,11 @@ export default function StaffManagementPage() {
 
             {/* MODAL HEADER */}
 
-            <div className="flex items-start justify-between border-b border-mist px-6 py-5">
+            <div className="flex items-start justify-between border-b border-mist px-4 py-3.5">
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2.5">
 
-                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sage-light text-lg text-sage-deep">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sage-light text-base text-sage-deep">
                   +
                 </div>
 
@@ -947,7 +1015,7 @@ export default function StaffManagementPage() {
 
                   <h2
                     id="create-staff-title"
-                    className="font-display text-xl font-semibold text-ink"
+                    className="font-display text-lg font-semibold text-ink"
                   >
                     Create Staff Account
                   </h2>
@@ -967,15 +1035,7 @@ export default function StaffManagementPage() {
                   closeCreateModal
                 }
                 disabled={loading}
-                className="
-                  flex h-9 w-9
-                  items-center justify-center
-                  rounded-lg
-                  bg-gray-50
-                  text-xl text-gray-500
-                  hover:bg-gray-100
-                  disabled:opacity-50
-                "
+                className="dashboard-icon-control flex h-9 w-9 items-center justify-center text-xl text-gray-500 transition-colors hover:text-ink disabled:opacity-50"
                 aria-label="Close"
               >
                 ×
@@ -992,17 +1052,17 @@ export default function StaffManagementPage() {
               className="flex min-h-0 flex-1 flex-col"
             >
 
-              <div className="overflow-y-auto px-6 py-6">
+              <div className="overflow-y-auto px-4 py-4">
 
                 {/* ACCOUNT */}
 
-                <div className="mb-7">
+                <div className="mb-5">
 
-                  <h3 className="mb-4 text-xs font-bold uppercase tracking-wider text-sage">
+                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-sage">
                     Account Information
                   </h3>
 
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 
                     {/* USERNAME */}
 
@@ -1010,7 +1070,7 @@ export default function StaffManagementPage() {
 
                       <label
                         htmlFor="username"
-                        className="mb-2 block text-xs font-semibold text-ink"
+                        className="mb-1.5 block text-xs font-semibold text-ink"
                       >
                         Username
                         <span className="ml-1 text-clay">
@@ -1036,7 +1096,7 @@ export default function StaffManagementPage() {
                           w-full rounded-lg
                           border border-mist
                           bg-white
-                          px-3.5 py-2.5
+                          px-3 py-2
                           text-sm text-ink
                           outline-none
                           transition
@@ -1062,7 +1122,7 @@ export default function StaffManagementPage() {
 
                       <label
                         htmlFor="full_name"
-                        className="mb-2 block text-xs font-semibold text-ink"
+                        className="mb-1.5 block text-xs font-semibold text-ink"
                       >
                         Full Name
                         <span className="ml-1 text-clay">
@@ -1087,7 +1147,7 @@ export default function StaffManagementPage() {
                           w-full rounded-lg
                           border border-mist
                           bg-white
-                          px-3.5 py-2.5
+                          px-3 py-2
                           text-sm text-ink
                           outline-none
                           transition
@@ -1107,9 +1167,9 @@ export default function StaffManagementPage() {
 
                 {/* STAFF ROLE */}
 
-                <div className="mb-7">
+                <div className="mb-5">
 
-                  <h3 className="mb-4 text-xs font-bold uppercase tracking-wider text-sage">
+                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-sage">
                     Staff Assignment
                   </h3>
 
@@ -1117,7 +1177,7 @@ export default function StaffManagementPage() {
 
                     <label
                       htmlFor="staff_role"
-                      className="mb-2 block text-xs font-semibold text-ink"
+                      className="mb-1.5 block text-xs font-semibold text-ink"
                     >
                       Staff Role
                       <span className="ml-1 text-clay">
@@ -1135,31 +1195,14 @@ export default function StaffManagementPage() {
                         handleChange
                       }
                       disabled={loading}
-                      className="
-                        w-full rounded-lg
-                        border border-mist
-                        bg-white
-                        px-3.5 py-2.5
-                        text-sm text-ink
-                        outline-none
-                        focus:border-sage
-                        focus:ring-2
-                        focus:ring-sage-light
-                        disabled:bg-gray-50
-                      "
+                      className="dashboard-filter-control w-full outline-none focus:border-sage focus:ring-2 focus:ring-sage-light disabled:bg-gray-50"
                     >
 
                       <option value="hairstylist">
                         Hairstylist
                       </option>
 
-                      <option value="manicurist">
-                        Manicurist
-                      </option>
-
-                      <option value="pedicurist">
-                        Pedicurist
-                      </option>
+                      <option value="manicurist">Nail Technician</option>
 
                       <option value="receptionist">
                         Receptionist
@@ -1175,11 +1218,11 @@ export default function StaffManagementPage() {
 
                 <div>
 
-                  <h3 className="mb-4 text-xs font-bold uppercase tracking-wider text-sage">
+                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-sage">
                     Security
                   </h3>
 
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 
                     {/* PASSWORD */}
 
@@ -1187,7 +1230,7 @@ export default function StaffManagementPage() {
 
                       <label
                         htmlFor="password"
-                        className="mb-2 block text-xs font-semibold text-ink"
+                        className="mb-1.5 block text-xs font-semibold text-ink"
                       >
                         Password
                         <span className="ml-1 text-clay">
@@ -1205,11 +1248,12 @@ export default function StaffManagementPage() {
                           placeholder="Minimum 8 characters"
                           autoComplete="new-password"
                           disabled={loading}
-                          className="w-full rounded-lg border border-mist bg-white px-3.5 py-2.5 pr-12 text-sm text-ink outline-none focus:border-sage focus:ring-2 focus:ring-sage-light disabled:bg-gray-50"
+                          className="w-full rounded-lg border border-mist bg-white px-3 py-2 pr-12 text-sm text-ink outline-none focus:border-sage focus:ring-2 focus:ring-sage-light disabled:bg-gray-50"
                         />
-                        <button type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-ink/40 hover:bg-sage-light hover:text-sage-deep focus:outline-none focus:ring-2 focus:ring-sage-light">
-                          <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 12s3-6 9-6 9 6 9 6-3 6-9 6-9-6-9-6Z" /><circle cx="12" cy="12" r="3" />{showPassword && <path d="M3 3l18 18" strokeLinecap="round" />}</svg>
-                        </button>
+                        <PasswordVisibilityButton
+                          visible={showPassword}
+                          onToggle={() => setShowPassword((visible) => !visible)}
+                        />
                       </div>
 
                     </div>
@@ -1220,7 +1264,7 @@ export default function StaffManagementPage() {
 
                       <label
                         htmlFor="confirm_password"
-                        className="mb-2 block text-xs font-semibold text-ink"
+                        className="mb-1.5 block text-xs font-semibold text-ink"
                       >
                         Confirm Password
                         <span className="ml-1 text-clay">
@@ -1238,11 +1282,12 @@ export default function StaffManagementPage() {
                           placeholder="Re-enter password"
                           autoComplete="new-password"
                           disabled={loading}
-                          className="w-full rounded-lg border border-mist bg-white px-3.5 py-2.5 pr-12 text-sm text-ink outline-none focus:border-sage focus:ring-2 focus:ring-sage-light disabled:bg-gray-50"
+                          className="w-full rounded-lg border border-mist bg-white px-3 py-2 pr-12 text-sm text-ink outline-none focus:border-sage focus:ring-2 focus:ring-sage-light disabled:bg-gray-50"
                         />
-                        <button type="button" onClick={() => setShowConfirmPassword((visible) => !visible)} aria-label={showConfirmPassword ? "Hide password" : "Show password"} aria-pressed={showConfirmPassword} className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-ink/40 hover:bg-sage-light hover:text-sage-deep focus:outline-none focus:ring-2 focus:ring-sage-light">
-                          <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 12s3-6 9-6 9 6 9 6-3 6-9 6-9-6-9-6Z" /><circle cx="12" cy="12" r="3" />{showConfirmPassword && <path d="M3 3l18 18" strokeLinecap="round" />}</svg>
-                        </button>
+                        <PasswordVisibilityButton
+                          visible={showConfirmPassword}
+                          onToggle={() => setShowConfirmPassword((visible) => !visible)}
+                        />
                       </div>
 
                     </div>
@@ -1251,7 +1296,7 @@ export default function StaffManagementPage() {
 
                   {/* SECURITY NOTE */}
 
-                  <div className="mt-4 flex items-center gap-3 rounded-lg bg-gray-50 p-3">
+                  <div className="mt-3 flex items-center gap-2.5 rounded-lg bg-gray-50 p-2.5">
 
                     <span className="text-sm">
                       🔒
@@ -1269,29 +1314,13 @@ export default function StaffManagementPage() {
 
                 </div>
 
-                {/* FORM ERROR */}
-
-                {error && (
-                  <div className="mt-5 flex items-start gap-2 rounded-lg border border-clay/20 bg-clay-light p-3 text-xs text-clay">
-
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white font-bold">
-                      !
-                    </span>
-
-                    <span>
-                      {error}
-                    </span>
-
-                  </div>
-                )}
-
               </div>
 
               {/* =================================
                   MODAL FOOTER
               ================================= */}
 
-              <div className="flex flex-col-reverse gap-2 border-t border-mist bg-gray-50/70 px-6 py-4 sm:flex-row sm:justify-end">
+              <div className="flex flex-col-reverse gap-2 border-t border-mist bg-gray-50/70 px-4 py-3 sm:flex-row sm:justify-end">
 
                 <button
                   type="button"
@@ -1303,7 +1332,7 @@ export default function StaffManagementPage() {
                     rounded-lg
                     border border-mist
                     bg-white
-                    px-5 py-2.5
+                    px-4 py-2
                     text-sm font-semibold
                     text-gray-600
                     transition
@@ -1324,7 +1353,7 @@ export default function StaffManagementPage() {
                     gap-2
                     rounded-lg
                     bg-sage
-                    px-5 py-2.5
+                    px-4 py-2
                     text-sm font-semibold
                     text-white
                     transition
@@ -1357,8 +1386,8 @@ export default function StaffManagementPage() {
 
           </div>
 
-        </div>
-
+        </div>,
+        document.body,
       )}
 
     </div>
@@ -1376,11 +1405,21 @@ function formatStaffRole(
     return "Unassigned";
   }
 
+  if (role === "manicurist" || role === "pedicurist" || role === "nail_technician") {
+    return "Nail Technician";
+  }
+
   return role
     .replace(/_/g, " ")
     .replace(/\b\w/g, (letter) =>
       letter.toUpperCase()
     );
+}
+
+function normalizeStaffRole(role: StaffRole | null): StaffRole {
+  return role === "manicurist" || role === "pedicurist" || role === "nail_technician"
+    ? "manicurist"
+    : role ?? "hairstylist";
 }
 
 function getInitials(
@@ -1415,10 +1454,9 @@ function getRoleClasses(
       return "bg-sage-light text-sage-deep";
 
     case "manicurist":
-      return "bg-gold-light text-[#8a681e]";
-
     case "pedicurist":
-      return "bg-[#edf2f3] text-[#4b686d]";
+    case "nail_technician":
+      return "bg-info-soft text-info";
 
     case "receptionist":
       return "bg-clay-light text-clay";

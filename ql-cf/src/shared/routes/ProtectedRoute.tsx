@@ -19,6 +19,7 @@ export function ProtectedRoute({
   const {
     user,
     role,
+    currentUser,
     loading,
   } = useAuth();
 
@@ -50,7 +51,7 @@ export function ProtectedRoute({
   if (!user) {
     return (
       <Navigate
-        to="/login"
+        to="/lyn-co/login"
         replace
         state={{
           from: location,
@@ -117,6 +118,11 @@ export function ProtectedRoute({
         replace
       />
     );
+  }
+
+  const passwordChangePath = role === "admin" ? "/lyn-co/admin/change-password" : "/lyn-co/staff/change-password";
+  if (currentUser?.mustChangePassword && location.pathname !== passwordChangePath) {
+    return <Navigate to={passwordChangePath} replace />;
   }
 
   // ==========================================
