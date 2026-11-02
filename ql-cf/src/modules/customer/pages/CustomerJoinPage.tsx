@@ -432,7 +432,7 @@ export function CustomerJoinPage() {
     {
       id: "default",
       title: "Good hair days start here.",
-      description: "Choose your service and plan your visit with Lyn & Co Salon and Spa.",
+      description: "Choose your service and plan your visit.",
       image: null,
       category: "Welcome",
       offer: null,
@@ -767,7 +767,7 @@ export function CustomerJoinPage() {
                     <div className="absolute inset-0 bg-gradient-to-r from-black/85 via-black/65 to-black/20" />
                     <div className="relative z-10 flex min-h-[15rem] max-w-3xl flex-col items-start justify-center px-4 py-6 sm:min-h-[22rem] sm:px-12">
                       <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/80">
-                        {slide.category === "Welcome" ? "Lyn & Co Salon and Spa" : "Lyn & Co · Package"}
+                        {slide.category === "Welcome" ? "Welcome" : "Package"}
                       </p>
                       <h1 className="mt-3 max-w-2xl font-display text-2xl font-semibold leading-tight text-white sm:text-5xl">{slide.title}</h1>
                       {slide.offer && <p className="mt-3 inline-flex rounded-full bg-white/95 px-4 py-2 text-sm font-bold text-ink shadow-sm">{slide.offer}</p>}
@@ -809,7 +809,6 @@ export function CustomerJoinPage() {
             </div>
           ) : (
             <div className="flex min-h-52 flex-col items-start justify-center px-2 py-6 sm:min-h-72 sm:py-8">
-              <p className="text-sm font-semibold text-ink/75">LYN &amp; CO SALON AND SPA</p>
               <h1 className="mt-3 max-w-2xl font-display text-3xl font-semibold leading-tight sm:text-5xl">Good hair days start here.</h1>
               <p className="mt-3 text-base text-ink/80">Choose your service and book your visit.</p>
             </div>
@@ -1472,9 +1471,6 @@ export function CustomerJoinPage() {
           </div>
         )}
 
-        <footer className="mt-10 border-t border-mist pt-5 text-center text-xs text-ink/55">
-          Lyn &amp; Co Salon and Spa
-        </footer>
       </main>
     </div>
   );

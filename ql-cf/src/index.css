@@ -373,6 +373,14 @@ textarea {
   min-height: 44px;
 }
 
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(0.96);
+}
+
 select,
 input:not([type="checkbox"]):not([type="radio"]),
 textarea {
@@ -405,7 +413,8 @@ textarea:focus {
 }
 
 .dashboard-icon-control:hover {
-  background: transparent;
+  background: var(--app-accent-soft);
+  color: var(--color-ink);
 }
 
 .system-icon-action {
