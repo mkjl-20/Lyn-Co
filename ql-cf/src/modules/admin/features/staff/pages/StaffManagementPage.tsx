@@ -4,9 +4,8 @@ import supabase from "../../../../../shared/lib/supabaseClient";
 import { apiRequest } from "../../../../../shared/lib/apiClient";
 import { PasswordVisibilityButton } from "../../../../../shared/components/PasswordVisibilityButton";
 import { StatusBadge } from "../../../../../shared/components/StatusBadge";
-import { PaginationControls } from "../../../../../shared/components/PaginationControls";
-import { paginateItems } from "../../../../../shared/lib/pagination";
 import { MoreVertical } from "lucide-react";
+import { useFeedback } from "../../../../../shared/components/FeedbackContext";
 
 type StaffRole =
   | "receptionist"
@@ -41,6 +40,7 @@ const initialForm: CreateStaffForm = {
 };
 
 export default function StaffManagementPage() {
+  const { confirm } = useFeedback();
   const [staff, setStaff] = useState<Staff[]>([]);
 
   const [search, setSearch] = useState("");
@@ -58,8 +58,6 @@ export default function StaffManagementPage() {
 
   const [loadingStaff, setLoadingStaff] =
     useState(true);
-  const [staffPage, setStaffPage] = useState(1);
-  const [staffPageSize, setStaffPageSize] = useState(() => window.innerWidth <= 1023 ? 2 : 4);
 
   const [error, setError] = useState("");
 
@@ -71,17 +69,6 @@ export default function StaffManagementPage() {
   const [editStaffRole, setEditStaffRole] = useState<StaffRole>("hairstylist");
   const [isSavingStaff, setIsSavingStaff] = useState(false);
   const [openStaffActionsId, setOpenStaffActionsId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const updateStaffPageSize = () => {
-      const nextPageSize = window.innerWidth <= 1023 ? 2 : 4;
-      setStaffPageSize(nextPageSize);
-      setStaffPage(1);
-    };
-
-    window.addEventListener("resize", updateStaffPageSize);
-    return () => window.removeEventListener("resize", updateStaffPageSize);
-  }, []);
 
   // ==========================================
   // LOAD STAFF
@@ -165,7 +152,6 @@ export default function StaffManagementPage() {
       return matchesSearch && matchesRole;
     });
   }, [staff, search, roleFilter]);
-  const paginatedStaff = paginateItems(filteredStaff, staffPage, staffPageSize);
 
   // ==========================================
   // FORM CHANGE
@@ -377,7 +363,12 @@ export default function StaffManagementPage() {
   const handleToggleStaffStatus = async (member: Staff) => {
     const isActive = !member.is_active;
     const action = isActive ? "activate" : "deactivate";
-    if (!window.confirm(`Are you sure you want to ${action} ${member.full_name}'s account?`)) return;
+    if (!await confirm({
+      title: `${isActive ? "Activate" : "Deactivate"} staff account`,
+      message: `Are you sure you want to ${action} ${member.full_name}'s account?`,
+      confirmLabel: isActive ? "Activate account" : "Deactivate account",
+      destructive: !isActive,
+    })) return;
 
     setError("");
     setSuccess("");
@@ -394,7 +385,12 @@ export default function StaffManagementPage() {
   };
 
   const handleResetStaffPassword = async (member: Staff) => {
-    if (!window.confirm(`Reset ${member.full_name}'s password? Their current password will stop working and they must choose a new one at next sign-in.`)) return;
+    if (!await confirm({
+      title: "Reset staff password",
+      message: `Reset ${member.full_name}'s password? Their current password will stop working and they must choose a new one at next sign-in.`,
+      confirmLabel: "Reset password",
+      destructive: true,
+    })) return;
     setError("");
     setSuccess("");
     try {
@@ -412,20 +408,6 @@ export default function StaffManagementPage() {
       setError(requestError instanceof Error ? requestError.message : "Unable to reset the staff password.");
     }
   };
-
-  // ==========================================
-  // STATISTICS
-  // ==========================================
-
-  const totalStaff = staff.length;
-
-  const activeStaff = staff.filter(
-    (member) => member.is_active
-  ).length;
-
-  const inactiveStaff = staff.filter(
-    (member) => !member.is_active
-  ).length;
 
   // ==========================================
   // UI
@@ -505,96 +487,19 @@ export default function StaffManagementPage() {
           MAIN CONTENT
       ====================================== */}
 
-      <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col px-4 pb-2 pt-1 sm:px-6">
-
-        {/* ====================================
-            STATISTICS
-        ==================================== */}
-
-        <div className="mb-2 grid shrink-0 grid-cols-3 gap-2 sm:mb-3 sm:gap-3">
-
-          {/* TOTAL */}
-
-          <div className="rounded-xl border border-mist bg-white p-2.5 shadow-sm sm:p-3">
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-                  Total Staff
-                </p>
-
-                <p className="mt-1 text-xl font-semibold text-ink sm:text-2xl">
-                  {totalStaff}
-                </p>
-
-              </div>
-
-
-            </div>
-
-          </div>
-
-          {/* ACTIVE */}
-
-          <div className="rounded-xl border border-mist bg-white p-2.5 shadow-sm sm:p-3">
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-                  Active
-                </p>
-
-                <p className="mt-1 text-xl font-semibold text-sage-deep sm:text-2xl">
-                  {activeStaff}
-                </p>
-
-              </div>
-
-
-            </div>
-
-          </div>
-
-          {/* INACTIVE */}
-
-          <div className="rounded-xl border border-mist bg-white p-2.5 shadow-sm sm:p-3">
-
-            <div className="flex items-center justify-between">
-
-              <div>
-
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-                  Inactive
-                </p>
-
-                <p className="mt-1 text-xl font-semibold text-gray-600 sm:text-2xl">
-                  {inactiveStaff}
-                </p>
-
-              </div>
-
-
-            </div>
-
-          </div>
-
-        </div>
+      <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col overflow-y-auto px-4 pb-3 pt-1 sm:px-6">
 
         {/* ====================================
             STAFF TABLE
         ==================================== */}
 
-        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-mist bg-white shadow-sm">
+        <section className="flex flex-col rounded-xl border border-mist bg-white shadow-sm">
 
           {/* TABLE HEADER */}
 
           <div className="shrink-0 border-b border-mist px-4 py-2 sm:px-5">
 
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 
               <div>
 
@@ -629,7 +534,6 @@ export default function StaffManagementPage() {
                 value={search}
                 onChange={(event) => {
                   setSearch(event.target.value);
-                  setStaffPage(1);
                 }}
                 placeholder="Search staff..."
                 className="dashboard-filter-control w-full outline-none transition placeholder:text-gray-400 focus:border-sage focus:ring-2 focus:ring-sage-light"
@@ -643,7 +547,6 @@ export default function StaffManagementPage() {
               value={roleFilter}
               onChange={(event) => {
                 setRoleFilter(event.target.value as "all" | StaffRole);
-                setStaffPage(1);
               }}
               className="dashboard-filter-control w-full outline-none focus:border-sage focus:ring-2 focus:ring-sage-light sm:w-48"
             >
@@ -684,7 +587,7 @@ export default function StaffManagementPage() {
                TABLE
             ================================== */
 
-            <div className="min-h-0 flex-1 overflow-hidden">
+            <div className="max-h-[min(65dvh,48rem)] overflow-auto">
 
               <table className="admin-responsive-table w-full table-fixed text-sm">
 
@@ -771,7 +674,7 @@ export default function StaffManagementPage() {
 
                   ) : (
 
-                    paginatedStaff.items.map(
+                    filteredStaff.map(
                       (member) => (
                         <tr
                           key={member.id}
@@ -780,7 +683,7 @@ export default function StaffManagementPage() {
 
                           {/* STAFF */}
 
-                          <td data-label="Staff Member" className="px-6 py-4">
+                          <td data-label="Staff Member" className="px-6 py-3">
 
                             <div className="flex items-center gap-3">
 
@@ -806,7 +709,7 @@ export default function StaffManagementPage() {
 
                           {/* USERNAME */}
 
-                          <td data-label="Username" className="px-6 py-4">
+                          <td data-label="Username" className="px-6 py-3">
 
                             <span className="rounded-md bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600">
                               @
@@ -819,7 +722,7 @@ export default function StaffManagementPage() {
 
                           {/* ROLE */}
 
-                          <td data-label="Role" className="px-6 py-4">
+                          <td data-label="Role" className="px-6 py-3">
 
                             <span
                               className={`
@@ -840,7 +743,7 @@ export default function StaffManagementPage() {
 
                           {/* STATUS */}
 
-                          <td data-label="Status" className="px-6 py-4">
+                          <td data-label="Status" className="px-6 py-3">
 
                             <StatusBadge status={member.is_active ? "active" : "inactive"}>
                               {member.is_active
@@ -914,21 +817,10 @@ export default function StaffManagementPage() {
                 </tbody>
 
               </table>
+              <div aria-hidden="true" className="h-8 bg-gray-100" />
 
             </div>
           )}
-          {!loadingStaff && filteredStaff.length > 0 && (
-            <PaginationControls
-              page={paginatedStaff.page}
-              totalPages={paginatedStaff.totalPages}
-              firstItem={paginatedStaff.firstItem}
-              lastItem={paginatedStaff.lastItem}
-              totalItems={filteredStaff.length}
-              onPageChange={setStaffPage}
-              label="Staff"
-            />
-          )}
-
         </section>
 
       </main>
@@ -986,7 +878,7 @@ export default function StaffManagementPage() {
                       setError("");
                     }}
                     disabled={isSavingStaff}
-                    className="rounded-lg border border-mist px-4 py-2 text-sm font-semibold text-ink disabled:opacity-50"
+                    className="form-cancel-action rounded-lg px-4 py-2 text-sm font-semibold"
                   >
                     Cancel
                   </button>
@@ -1367,17 +1259,7 @@ export default function StaffManagementPage() {
                     closeCreateModal
                   }
                   disabled={loading}
-                  className="
-                    rounded-lg
-                    border border-mist
-                    bg-white
-                    px-4 py-2
-                    text-sm font-semibold
-                    text-gray-600
-                    transition
-                    hover:bg-gray-50
-                    disabled:opacity-50
-                  "
+                  className="form-cancel-action rounded-lg px-4 py-2 text-sm font-semibold"
                 >
                   Cancel
                 </button>

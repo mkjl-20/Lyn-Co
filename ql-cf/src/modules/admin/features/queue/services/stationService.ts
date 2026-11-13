@@ -44,6 +44,39 @@ export interface StationInput {
   homeStaffId: string | null;
 }
 
+export interface StationCoverageGrant {
+  id: string;
+  stationId: string;
+  stationLabel: string;
+  staffId: string;
+  staffName: string;
+  reason: string;
+  expiresAt: string;
+}
+
+export async function fetchStationCoverageGrants(): Promise<StationCoverageGrant[]> {
+  const { grants } = await apiRequest<{ grants: StationCoverageGrant[] }>(
+    "/api/admin/workspace/station-coverage-grants",
+  );
+  return grants;
+}
+
+export async function grantTemporaryStationCoverage(
+  input: { stationId: string; staffId: string; durationHours: number; reason: string },
+): Promise<void> {
+  await apiRequest("/api/admin/workspace/station-coverage-grants", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function revokeStationCoverageGrant(grantId: string): Promise<void> {
+  await apiRequest(`/api/admin/workspace/station-coverage-grants/${grantId}/revoke`, {
+    method: "PATCH",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function createStation(input: StationInput): Promise<void> {
   await apiRequest("/api/admin/workspace/stations", {
     method: "POST",

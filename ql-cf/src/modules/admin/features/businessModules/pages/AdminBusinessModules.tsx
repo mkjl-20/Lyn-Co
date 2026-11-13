@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { Download, HardDriveDownload, RotateCcw, Upload } from "lucide-react";
+import { Download, Ellipsis, HardDriveDownload, ReceiptText, RotateCcw, Scissors, Sparkles, Upload } from "lucide-react";
 import { apiDownload, apiRequest, apiRequestWithProgress } from "@/shared/lib/apiClient";
 import { StatusBadge } from "@/shared/components/StatusBadge";
 import { PaginationControls } from "@/shared/components/PaginationControls";
 import { paginateItems } from "@/shared/lib/pagination";
 import { formatTicketNumber } from "@/shared/lib/ticketNumber";
-import { useAuth } from "@/shared/context/AuthContext";
+import { useAuth } from "@/shared/context/useAuth";
 import { DownloadFeedback, type DownloadFeedbackState } from "../../../components/DownloadFeedback";
 import { PhilippinePhoneInput } from "@/shared/components/PhilippinePhoneInput";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
 type ModuleKey = "customer-tagging" | "promotions-events" | "pos-transactions" | "reports" | "backup-restore" | "audit-logs";
 interface TaggedCustomer {
@@ -264,6 +265,15 @@ interface BackupRestorePreview {
   recordCounts: Record<string, number>;
 }
 
+interface OperationalResetPreview {
+  staff: { username: string; fullName: string }[];
+  counts: Record<string, number>;
+  exportedAt: string | null;
+  hasRecentBackup: boolean;
+  confirmationPhrase: string;
+  preserved: string[];
+}
+
 const BACKUP_SUMMARY_GROUPS = [
   {
     label: "Customer profiles & tags",
@@ -275,7 +285,7 @@ const BACKUP_SUMMARY_GROUPS = [
   },
   {
     label: "Staff & salon setup",
-    tables: ["profiles", "staff_role_catalog", "staff_availability", "staff_rebalance_requests", "stations", "device_heartbeats", "system_settings"],
+    tables: ["profiles", "staff_availability", "staff_rebalance_requests", "stations", "device_heartbeats", "system_settings"],
   },
   {
     label: "Services, sales & reports",
@@ -376,7 +386,14 @@ function downloadJson(filename: string, data: unknown) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
-export function AdminBusinessModules({ module }: { module: ModuleKey }) {
+export function AdminBusinessModules({
+  module,
+  showPaymentHistory = false,
+}: {
+  module: ModuleKey;
+  showPaymentHistory?: boolean;
+}) {
+  const { confirm, notify } = useFeedback();
   const { currentUser } = useAuth();
   const isReceptionist = currentUser?.accountRole === "staff" && currentUser.staffRole === "receptionist";
   const canReviewPosAdjustments = currentUser?.accountRole === "admin";
@@ -418,6 +435,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
   const [transactionPage, setTransactionPage] = useState(1);
   const [posPasswordAction, setPosPasswordAction] = useState<PosPasswordAction | null>(null);
   const [posAdminPassword, setPosAdminPassword] = useState("");
+  const [openPosMenuId, setOpenPosMenuId] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [auditSearch, setAuditSearch] = useState("");
   const [auditFrom, setAuditFrom] = useState("");
@@ -448,6 +466,9 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
   const [backupRestorePreview, setBackupRestorePreview] = useState<BackupRestorePreview | null>(null);
   const [showBackupConfirmation, setShowBackupConfirmation] = useState(false);
   const [showRestoreConfirmation, setShowRestoreConfirmation] = useState(false);
+  const [operationalResetPreview, setOperationalResetPreview] = useState<OperationalResetPreview | null>(null);
+  const [showOperationalResetConfirmation, setShowOperationalResetConfirmation] = useState(false);
+  const [operationalResetConfirmation, setOperationalResetConfirmation] = useState("");
   const backupFileReadId = useRef(0);
 
   const loadModule = useCallback(async (showLoading = true) => {
@@ -471,13 +492,15 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
         setPackageServices(serviceResult.services);
       } else if (module === "pos-transactions") {
         const transactionParams = new URLSearchParams();
-        if (transactionFrom) transactionParams.set("from", new Date(`${transactionFrom}T00:00:00`).toISOString());
-        if (transactionTo) transactionParams.set("to", new Date(`${transactionTo}T23:59:59.999`).toISOString());
+        if (showPaymentHistory && transactionFrom) transactionParams.set("from", new Date(`${transactionFrom}T00:00:00`).toISOString());
+        if (showPaymentHistory && transactionTo) transactionParams.set("to", new Date(`${transactionTo}T23:59:59.999`).toISOString());
         const transactionQuery = transactionParams.size ? `?${transactionParams.toString()}` : "";
-        const [candidateResult, transactionResult, promotionResult] = await Promise.all([
+        const [candidateResult, promotionResult, transactionResult] = await Promise.all([
           apiRequest<{ candidates: CheckoutCandidate[] }>("/api/admin/workspace/checkout-candidates"),
-          apiRequest<{ transactions: Transaction[]; adjustmentsUnavailable?: boolean }>(`/api/admin/workspace/transactions${transactionQuery}`),
           apiRequest<{ promotions: Promotion[] }>("/api/admin/workspace/promotions"),
+          showPaymentHistory
+            ? apiRequest<{ transactions: Transaction[]; adjustmentsUnavailable?: boolean }>(`/api/admin/workspace/transactions${transactionQuery}`)
+            : Promise.resolve({ transactions: [], adjustmentsUnavailable: false }),
         ]);
         setErrorMessage(null);
         setCandidates(candidateResult.candidates);
@@ -485,10 +508,11 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
         setTransactionAdjustmentsUnavailable(transactionResult.adjustmentsUnavailable ?? false);
         setPromotions(promotionResult.promotions);
       } else if (module === "backup-restore") {
-        const [result, scheduleResult, filesResult] = await Promise.all([
+        const [result, scheduleResult, filesResult, resetPreview] = await Promise.all([
           apiRequest<{ history: BackupHistory[] }>("/api/admin/workspace/backup/history"),
           apiRequest<{ schedule: ScheduledBackupStatus }>("/api/admin/workspace/backup/schedule-status"),
           apiRequest<ScheduledBackupFilesResult>("/api/admin/workspace/backup/files"),
+          apiRequest<OperationalResetPreview>("/api/admin/workspace/operational-reset/preview"),
         ]);
         setErrorMessage(null);
         setBackupHistory(result.history);
@@ -497,6 +521,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
         setBackupFilesAvailable(filesResult.available);
         setBackupFilesMessage(filesResult.message);
         setBackupSummaryCounts(result.history.find((item) => item.action === "export")?.record_counts ?? null);
+        setOperationalResetPreview(resetPreview);
       } else if (module === "audit-logs") {
         const auditResult = await apiRequest<{ logs: AuditLog[] }>("/api/admin/workspace/audit-logs");
         setErrorMessage(null);
@@ -507,7 +532,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
     } finally {
       setIsLoading(false);
     }
-  }, [customerSearch, module, transactionFrom, transactionTo]);
+  }, [customerSearch, module, showPaymentHistory, transactionFrom, transactionTo]);
 
   useEffect(() => {
     // The effect calls the async loader without its synchronous loading-state update.
@@ -583,10 +608,10 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
     setSuccessMessage(null);
     try {
       await action();
-      setSuccessMessage(success);
+      notify("success", success);
       await loadModule();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to complete the request.");
+      notify("error", error instanceof Error ? error.message : "Unable to complete the request.");
     } finally {
       setIsSaving(false);
     }
@@ -733,8 +758,13 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
     }, `${adjustmentType === "void" ? "Void" : "Refund"} request submitted for approval.`);
   }
 
-  function rejectPosAdjustment(adjustmentId: string) {
-    if (!window.confirm("Reject this refund or void request?")) return;
+  async function rejectPosAdjustment(adjustmentId: string) {
+    if (!await confirm({
+      title: "Reject refund or void request",
+      message: "Reject this refund or void request?",
+      confirmLabel: "Reject request",
+      destructive: true,
+    })) return;
     setErrorMessage(null);
     setSuccessMessage(null);
     setPosAdminPassword("");
@@ -855,6 +885,27 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
     }
   }
 
+  async function resetOperationalData() {
+    if (!operationalResetPreview || operationalResetConfirmation !== operationalResetPreview.confirmationPhrase) return;
+    setShowOperationalResetConfirmation(false);
+    setIsSaving(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const result = await apiRequest<{ message: string }>("/api/admin/workspace/operational-reset", {
+        method: "POST",
+        body: JSON.stringify({ confirmation: operationalResetConfirmation }),
+      });
+      setSuccessMessage(result.message);
+      setOperationalResetConfirmation("");
+      await loadModule();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to clear operational data.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function saveScheduledBackup(file: ScheduledBackupFile) {
     setSavingBackupFile(file.fileName);
     setErrorMessage(null);
@@ -955,8 +1006,12 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
     }
   }
 
-  function exportAuditLogs() {
-    if (!window.confirm(`Download ${filteredAuditLogs.length} filtered audit log records as a CSV file?`)) return;
+  async function exportAuditLogs() {
+    if (!await confirm({
+      title: "Export audit logs",
+      message: `Download ${filteredAuditLogs.length} filtered audit log records as a CSV file?`,
+      confirmLabel: "Download CSV",
+    })) return;
     setDownloadState({ status: "running", message: "Preparing audit log export…" });
     const rows = [
       ["Log no.", "Date & time", "Name", "Role", "Action", "Before", "After", "Status"],
@@ -993,10 +1048,14 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
     });
   }
 
-  function exportReport() {
+  async function exportReport() {
     if (!report) return;
     const formatLabel = reportFileType === "pdf" ? "PDF print dialog" : `${reportFileType.toUpperCase()} file`;
-    if (!window.confirm(`Prepare the report as a ${formatLabel}?`)) return;
+    if (!await confirm({
+      title: "Prepare report",
+      message: `Prepare the report as a ${formatLabel}?`,
+      confirmLabel: "Prepare report",
+    })) return;
     setDownloadState({ status: "running", message: "Preparing report…" });
     const currentReportType = REPORT_TYPES.find((item) => item.id === report.reportType);
     const rows: (string | number)[][] = [
@@ -1105,12 +1164,18 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
   return (
     <main className={`pastel-pink-gradient-page text-ink ${
       isBackupModule
-        ? "h-full min-h-0 overflow-hidden px-3 pb-8 pt-3 sm:px-4 sm:pb-10 sm:pt-4"
+        ? "h-full min-h-0 overflow-hidden px-3 pb-3 pt-3 sm:px-4 sm:pb-4 sm:pt-4"
         : isCustomerTagging
-          ? "flex h-full min-h-0 flex-col overflow-hidden px-3 pb-3 pt-2 sm:px-4 sm:pb-4 sm:pt-3"
+          ? "flex h-full min-h-0 flex-col overflow-hidden px-3 pb-10 pt-2 sm:px-4 sm:pb-10 sm:pt-3"
         : "h-full min-h-0 overflow-hidden p-3 sm:p-5"
     }`}>
-      <div className={`mx-auto h-full min-h-0 max-w-6xl ${isBackupModule || isCustomerTagging ? "flex w-full flex-col overflow-hidden" : "overflow-y-auto"}`}>
+      <div className={`mx-auto h-full min-h-0 max-w-6xl ${
+        isBackupModule
+          ? "flex w-full flex-col overflow-y-auto"
+          : isCustomerTagging
+            ? "flex w-full flex-col overflow-hidden"
+            : "overflow-y-auto pb-10"
+      }`}>
         {errorMessage && <p role="alert" className={`rounded-lg border border-clay/20 bg-clay-light text-clay ${isBackupModule ? "mt-1 px-3 py-1.5 text-xs" : "mt-4 px-4 py-3 text-sm"}`}>{errorMessage}</p>}
         {successMessage && <p role="status" className={`rounded-lg border border-success/20 bg-success-soft text-success ${isBackupModule ? "mt-1 px-3 py-1.5 text-xs" : "mt-4 px-4 py-3 text-sm"}`}>{successMessage}</p>}
         {module !== "backup-restore" && (
@@ -1197,7 +1262,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                       VIP customer
                     </label>
                     <div className="flex justify-end gap-2 border-t border-mist pt-3">
-                      <button type="button" disabled={isSaving} onClick={() => setShowCustomerForm(false)} className="min-h-10 rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70">Cancel</button>
+                      <button type="button" disabled={isSaving} onClick={() => setShowCustomerForm(false)} className="form-cancel-action min-h-10 rounded-lg px-4 text-sm font-semibold">Cancel</button>
                       <button type="submit" disabled={isSaving} className="dashboard-primary-action min-h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50">{isSaving ? "Adding…" : "Add customer"}</button>
                     </div>
                   </form>
@@ -1349,7 +1414,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                         </div>
                         <div className="flex flex-wrap gap-2 pt-1">
                           <button type="submit" disabled={isSaving || (promotionForm.limitToServices && promotionForm.serviceIds.length === 0)} className="dashboard-primary-action min-h-10 flex-1 rounded-lg px-3 text-sm font-semibold disabled:opacity-50">{editingPromotionId ? "Save changes" : "Create promotion"}</button>
-                          <button type="button" onClick={() => { setShowPromotionForm(false); setEditingPromotionId(null); }} className="min-h-10 rounded-lg border border-mist px-3 text-sm font-semibold text-ink/65">Cancel</button>
+                          <button type="button" onClick={() => { setShowPromotionForm(false); setEditingPromotionId(null); }} className="form-cancel-action min-h-10 rounded-lg px-3 text-sm font-semibold">Cancel</button>
                         </div>
                       </form>
                     </div>, document.body)
@@ -1432,7 +1497,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                   </div>
                   <div className="flex gap-2">
                     <button type="submit" disabled={isSaving || packageForm.serviceIds.length === 0} className="dashboard-primary-action min-h-10 flex-1 rounded-lg px-3 text-sm font-semibold disabled:opacity-50">Save package</button>
-                    <button type="button" onClick={() => setShowPackageForm(false)} className="min-h-10 rounded-lg border border-mist px-3 text-sm font-semibold text-ink/65">Cancel</button>
+                    <button type="button" onClick={() => setShowPackageForm(false)} className="form-cancel-action min-h-10 rounded-lg px-3 text-sm font-semibold">Cancel</button>
                   </div>
                 </form>
                 </div>, document.body)
@@ -1443,22 +1508,86 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
         )}
 
         {module === "pos-transactions" && (
-          <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-            <section className="h-fit space-y-3 rounded-2xl border border-mist bg-white p-5">
-              <h3 className="font-semibold">Checkout completed ticket</h3>
-              <p className="text-sm text-ink/55">Record payment for a completed ticket.</p>
-              <button type="button" disabled={candidates.length === 0 || isLoading} onClick={() => setShowCheckoutForm(true)} className="dashboard-primary-action min-h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50">Record payment</button>
-              {candidates.length === 0 && !isLoading && <p className="text-xs text-ink/50">No completed tickets are waiting for checkout.</p>}
-            </section>
-            <section className="rounded-2xl border border-mist bg-white p-5">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <h3 className="font-semibold">Transaction history</h3>
-                  <p className="mt-1 text-xs text-ink/50">Showing up to 1,000 records. Leave dates blank to view all history.</p>
+          <div className={`mt-3 grid gap-2 ${showPaymentHistory ? "xl:grid-cols-[minmax(17rem,0.72fr)_minmax(0,1.8fr)]" : "mx-auto w-full max-w-4xl"}`}>
+            <section className="h-fit overflow-hidden rounded-2xl border border-sage/40 bg-white shadow-[0_8px_24px_rgba(47,74,59,0.08)]">
+              <div className="flex items-center justify-between bg-sage-deep px-4 py-3 text-white">
+                <div className="flex items-center gap-2">
+                  <Scissors size={18} aria-hidden="true" />
+                  <h3 className="font-display text-sm font-semibold tracking-wide">Salon checkout</h3>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <label className="text-xs text-ink/55">From<input type="date" value={transactionFrom} onChange={(event) => { setTransactionFrom(event.target.value); setTransactionPage(1); }} className="dashboard-filter-control mt-1 block w-full text-ink" /></label>
-                  <label className="text-xs text-ink/55">To<input type="date" value={transactionTo} onChange={(event) => { setTransactionTo(event.target.value); setTransactionPage(1); }} className="dashboard-filter-control mt-1 block w-full text-ink" /></label>
+                <span className="rounded-full border border-white/25 px-2.5 py-1 text-[10px] font-medium">Completed visits</span>
+              </div>
+              <div className="space-y-3 bg-[var(--app-surface-soft)] p-4">
+                <div className="flex items-end justify-between gap-2">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-sage-deep">Ready for payment</p>
+                    <p className="mt-1 text-3xl font-semibold tabular-nums text-ink" aria-live="polite">
+                      {isLoading ? "—" : candidates.length}
+                    </p>
+                  </div>
+                  <span className="mb-1 rounded-full border border-sage/30 bg-white px-2.5 py-1 text-[10px] font-medium text-sage-deep">
+                    {isLoading ? "Loading visits" : candidates.length ? "Awaiting checkout" : "All visits settled"}
+                  </span>
+                </div>
+                <div className="rounded-xl border border-sage/20 bg-white p-3">
+                  <div className="flex items-center gap-1.5 text-sage-deep">
+                    <Sparkles size={14} aria-hidden="true" />
+                    <p className="text-[10px] font-semibold uppercase tracking-wide">Next guest</p>
+                  </div>
+                  {candidates[0] ? (
+                    <div className="mt-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-ink">{candidates[0].customerName}</p>
+                          <p className="mt-0.5 text-xs text-ink/55">Visit {formatTicketNumber(candidates[0].ticketNumber)}</p>
+                        </div>
+                        <Scissors size={18} className="shrink-0 text-sage-deep/70" aria-hidden="true" />
+                      </div>
+                      {candidates[0].services.length > 0 && (
+                        <ul className="mt-2 space-y-1 border-t border-sage/15 pt-2 text-xs text-ink/65">
+                          {candidates[0].services.slice(0, 3).map((service, index) => (
+                            <li key={`${service.name}-${index}`} className="flex justify-between gap-2">
+                              <span className="truncate">{service.name}</span>
+                              <span className="shrink-0 tabular-nums">₱{service.price.toFixed(2)}</span>
+                            </li>
+                          ))}
+                          {candidates[0].services.length > 3 && (
+                            <li className="text-[10px] text-ink/45">+{candidates[0].services.length - 3} more services</li>
+                          )}
+                        </ul>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-ink/55">{isLoading ? "Loading completed visits…" : "No completed visits are waiting for payment."}</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={candidates.length === 0 || isLoading}
+                  onClick={() => {
+                    setSelectedTicket(candidates.length === 1 ? candidates[0].id : "");
+                    setShowCheckoutForm(true);
+                  }}
+                  className="dashboard-primary-action flex min-h-11 w-full items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold disabled:opacity-50"
+                >
+                  <ReceiptText size={16} aria-hidden="true" />
+                  {candidates.length ? "Take payment" : "No visits to checkout"}
+                </button>
+                <p className="text-center text-[10px] text-ink/50">Review services · choose payment · complete guest visit</p>
+              </div>
+            </section>
+            {showPaymentHistory && <section className="min-w-0 rounded-2xl border border-sage/25 bg-white p-3 shadow-[0_8px_24px_rgba(47,74,59,0.06)] sm:p-4">
+              <div className="flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <ReceiptText size={18} className="text-sage-deep" aria-hidden="true" />
+                    <h3 className="font-display font-semibold">Visit receipts</h3>
+                  </div>
+                  <p className="mt-1 text-xs text-ink/50">Payment history for completed salon visits.</p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <label className="text-[10px] font-medium text-ink/55">From<input type="date" value={transactionFrom} onChange={(event) => { setTransactionFrom(event.target.value); setTransactionPage(1); }} className="dashboard-filter-control mt-1 block w-full text-ink" /></label>
+                  <label className="text-[10px] font-medium text-ink/55">To<input type="date" value={transactionTo} onChange={(event) => { setTransactionTo(event.target.value); setTransactionPage(1); }} className="dashboard-filter-control mt-1 block w-full text-ink" /></label>
                 </div>
               </div>
               {transactionAdjustmentsUnavailable && (
@@ -1471,53 +1600,73 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                   Refund and void requests need approval from a different administrator.
                 </p>
               )}
-              {isLoading ? <p className="py-8 text-sm text-ink/50">Loading transactions…</p> : transactions.length === 0 ? <p className="py-8 text-sm text-ink/50">No payments recorded yet.</p> : (
-                <div className="mt-4 overflow-hidden rounded-xl border border-mist">
-                  <table className="admin-responsive-table w-full table-fixed text-left text-sm">
-                    <thead className="bg-porcelain text-left text-[10px] font-bold uppercase tracking-wide text-ink/45">
-                      <tr><th className="px-4 py-3">Date</th><th>Ticket</th><th>Customer</th><th>Method</th><th>Total</th><th>Status / adjustments</th><th className="pr-4">Actions</th></tr>
-                    </thead>
-                    <tbody className="divide-y divide-mist/70">
-                      {paginatedTransactions.items.map((transaction) => (
-                        <tr key={transaction.id} className="transition-colors hover:bg-porcelain/60">
-                          <td data-label="Date" className="py-3 text-xs text-ink/55">{new Date(transaction.created_at).toLocaleString()}</td>
-                          <td data-label="Ticket" className="py-3 font-medium">{formatTicketNumber(transaction.ticket_number)}</td>
-                          <td data-label="Customer" className="py-3">{transaction.customer_name}</td>
-                          <td data-label="Method" className="py-3 capitalize text-ink/65">{transaction.payment_method}</td>
-                          <td data-label="Total" className="py-3 font-semibold">₱{Number(transaction.total_amount).toFixed(2)}</td>
-                          <td data-label="Status / adjustments" className="py-3">
+              {isLoading ? <p className="py-8 text-sm text-ink/50">Loading receipts…</p> : transactions.length === 0 ? <p className="py-8 text-sm text-ink/50">No payments recorded yet.</p> : (
+                <ul className="mt-3 grid gap-1.5" aria-label="Salon visit receipts">
+                  {paginatedTransactions.items.map((transaction) => (
+                    <li key={transaction.id} className="rounded-xl border border-sage/15 bg-white px-3 py-2.5 transition-colors hover:border-sage/35 hover:bg-[var(--app-surface-soft)]">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sage-light text-sage-deep">
+                            <Scissors size={16} aria-hidden="true" />
+                          </span>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span className="text-xs font-bold text-sage-deep">{formatTicketNumber(transaction.ticket_number)}</span>
+                              <span className="truncate text-sm font-semibold text-ink">{transaction.customer_name}</span>
+                            </div>
+                            <p className="mt-0.5 text-[10px] text-ink/50">{new Date(transaction.created_at).toLocaleString()} <span className="px-1 text-sage/50">·</span><span className="capitalize">{transaction.payment_method}</span></p>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <div className="text-right">
+                            <p className="text-sm font-bold tabular-nums text-ink">₱{Number(transaction.total_amount).toFixed(2)}</p>
                             <StatusBadge status={transaction.status}>{transaction.status}</StatusBadge>
-                            {transaction.adjustments.map((adjustment) => (
-                              <div key={adjustment.id} className="mt-1 text-[10px] text-ink/60" title={adjustment.reason}>
-                                {adjustment.adjustment_type} ₱{Number(adjustment.amount).toFixed(2)} · {adjustment.status}
-                                {canReviewPosAdjustments && adjustment.status === "pending" && adjustment.requested_by !== currentUser?.id && (
-                                  <>
-                                    <button type="button" disabled={isSaving} onClick={() => beginPosAdjustmentApproval(adjustment.id)} className="ui-action-positive ml-2 rounded px-1 font-semibold underline">Approve</button>
-                                    <button type="button" disabled={isSaving} onClick={() => void rejectPosAdjustment(adjustment.id)} className="ui-action-danger ml-2 rounded px-1 font-semibold underline">Reject</button>
-                                  </>
-                                )}
-                              </div>
-                            ))}
-                          </td>
-                          <td data-label="Actions" className="py-3 pr-4">
-                            {canReviewPosAdjustments && transaction.status === "paid" && (
-                              <div className="flex gap-2">
-                                <button type="button" disabled={isSaving} onClick={() => void requestPosAdjustment(transaction, "refund")} className="rounded border border-mist px-2 py-1 text-[10px] font-semibold text-ink/65 disabled:opacity-50">Refund</button>
-                                <button type="button" disabled={isSaving} onClick={() => void requestPosAdjustment(transaction, "void")} className="ui-action-danger rounded border border-danger/30 px-2 py-1 text-[10px] font-semibold disabled:opacity-50">Void</button>
-                              </div>
-                            )}
-                            {isReceptionist && transaction.status === "paid" && (
-                              <div className="flex gap-2">
-                                <button type="button" disabled={isSaving} onClick={() => void requestPosAdjustment(transaction, "refund")} className="rounded border border-mist px-2 py-1 text-[10px] font-semibold text-ink/65 disabled:opacity-50">Request refund</button>
-                                <button type="button" disabled={isSaving} onClick={() => void requestPosAdjustment(transaction, "void")} className="ui-action-danger rounded border border-danger/30 px-2 py-1 text-[10px] font-semibold disabled:opacity-50">Request void</button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                          </div>
+                          {(canReviewPosAdjustments || isReceptionist) && transaction.status === "paid" && (
+                            <div className="relative min-w-9">
+                              <button
+                                type="button"
+                                aria-label={`Transaction actions for ${formatTicketNumber(transaction.ticket_number)}`}
+                                aria-haspopup="menu"
+                                aria-expanded={openPosMenuId === transaction.id}
+                                disabled={isSaving}
+                                onClick={() => setOpenPosMenuId((current) => current === transaction.id ? null : transaction.id)}
+                                className="flex min-h-9 w-9 items-center justify-center rounded-full border border-sage/25 bg-white text-sage-deep hover:bg-sage-light disabled:opacity-50"
+                              >
+                                <Ellipsis size={18} aria-hidden="true" />
+                              </button>
+                              {openPosMenuId === transaction.id && (
+                                <div role="menu" aria-label="Transaction actions" className="absolute right-0 top-full z-20 mt-1.5 grid w-36 gap-1 rounded-xl border border-sage/20 bg-white p-1.5 shadow-lg">
+                                  <button type="button" role="menuitem" disabled={isSaving} onClick={() => { setOpenPosMenuId(null); void requestPosAdjustment(transaction, "refund"); }} className="min-h-8 rounded px-2 text-left text-xs font-semibold text-ink/75 hover:bg-sage-light disabled:opacity-50">{isReceptionist ? "Request refund" : "Refund"}</button>
+                                  <div aria-hidden="true" className="h-px bg-sage/20" />
+                                  <button type="button" role="menuitem" disabled={isSaving} onClick={() => { setOpenPosMenuId(null); void requestPosAdjustment(transaction, "void"); }} className="min-h-8 rounded px-2 text-left text-xs font-semibold text-danger hover:bg-danger/5 disabled:opacity-50">{isReceptionist ? "Request void" : "Void"}</button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {transaction.adjustments.length > 0 && (
+                        <div className="mt-2 border-t border-sage/20 pt-2">
+                          {transaction.adjustments.map((adjustment) => (
+                            <div key={adjustment.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] text-ink/60" title={adjustment.reason}>
+                              <span className="capitalize">{adjustment.adjustment_type}</span>
+                              <span>₱{Number(adjustment.amount).toFixed(2)}</span>
+                              <span>·</span>
+                              <span className="capitalize">{adjustment.status}</span>
+                              {canReviewPosAdjustments && adjustment.status === "pending" && adjustment.requested_by !== currentUser?.id && (
+                                <>
+                                  <button type="button" disabled={isSaving} onClick={() => beginPosAdjustmentApproval(adjustment.id)} className="ui-action-positive rounded px-1 font-semibold underline">Approve</button>
+                                  <button type="button" disabled={isSaving} onClick={() => void rejectPosAdjustment(adjustment.id)} className="ui-action-danger rounded px-1 font-semibold underline">Reject</button>
+                                </>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               )}
               {!isLoading && transactions.length > 0 && (
                 <PaginationControls
@@ -1530,18 +1679,18 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                   label="Transactions"
                 />
               )}
-            </section>
+            </section>}
             {showCheckoutForm && (
               createPortal(<div className="fixed inset-0 z-[1000] flex items-center justify-center bg-ink/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !isSaving) setShowCheckoutForm(false); }}>
                 <form role="dialog" aria-modal="true" aria-labelledby="checkout-title" onSubmit={(event) => void checkout(event)} className="max-h-[92dvh] w-full max-w-lg space-y-3 overflow-y-auto rounded-2xl border border-mist bg-white p-5 shadow-2xl">
                   <div className="flex items-start justify-between gap-3">
-                    <div><p className="text-xs font-semibold uppercase tracking-wide text-ink/45">POS transactions</p><h3 id="checkout-title" className="mt-1 font-display text-xl font-semibold">Checkout completed ticket</h3></div>
+                    <div><p className="text-xs font-semibold uppercase tracking-wide text-sage-deep">Salon checkout</p><h3 id="checkout-title" className="mt-1 font-display text-xl font-semibold">Complete guest payment</h3></div>
                     <button type="button" aria-label="Close dialog" disabled={isSaving} onClick={() => setShowCheckoutForm(false)} className="rounded-lg px-2 text-xl text-ink/50 hover:bg-porcelain">×</button>
                   </div>
-                  <label className="block text-xs font-medium text-ink/55">Completed ticket
+                  <label className="block text-xs font-medium text-ink/55">Completed visit
                     <select required value={selectedTicket} onChange={(event) => setSelectedTicket(event.target.value)} className="dashboard-filter-control mt-1 w-full">
-                      <option value="">Choose ticket</option>
-                      {candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>Ticket {formatTicketNumber(candidate.ticketNumber)} · {candidate.customerName}{candidate.promotionId ? " · offer applied" : ""}</option>)}
+                      <option value="">Choose a guest visit</option>
+                      {candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{formatTicketNumber(candidate.ticketNumber)} · {candidate.customerName}{candidate.promotionId ? " · offer applied" : ""}</option>)}
                     </select>
                   </label>
                   {currentTicket && <ul className="space-y-1 rounded-lg bg-porcelain p-3 text-xs">{currentTicket.services.map((service, index) => <li key={`${service.name}-${index}`} className="flex justify-between gap-3"><span>{service.name}</span><span>₱{service.price.toFixed(2)}</span></li>)}<li className="flex justify-between border-t border-mist pt-2 font-semibold"><span>Subtotal</span><span>₱{subtotal.toFixed(2)}</span></li></ul>}
@@ -1550,7 +1699,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                     <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="dashboard-filter-control mt-1 w-full"><option value="cash">Cash</option><option value="card">Card</option><option value="ewallet">E-wallet</option><option value="other">Other</option></select>
                   </label>
                   <div className="flex justify-end gap-2 border-t border-mist pt-3">
-                    <button type="button" disabled={isSaving} onClick={() => setShowCheckoutForm(false)} className="min-h-10 rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70">Cancel</button>
+                    <button type="button" disabled={isSaving} onClick={() => setShowCheckoutForm(false)} className="form-cancel-action min-h-10 rounded-lg px-4 text-sm font-semibold">Cancel</button>
                     <button type="submit" disabled={isSaving || !selectedTicket} className="dashboard-primary-action min-h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50">{isSaving ? "Processing…" : "Record payment"}</button>
                   </div>
                 </form>
@@ -1585,7 +1734,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                 />
               </label>
               <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <button type="button" disabled={isSaving} onClick={() => { setPosPasswordAction(null); setPosAdminPassword(""); }} className="rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70 disabled:opacity-50">Cancel</button>
+                <button type="button" disabled={isSaving} onClick={() => { setPosPasswordAction(null); setPosAdminPassword(""); }} className="form-cancel-action rounded-lg px-4 text-sm font-semibold">Cancel</button>
                 <button type="submit" disabled={isSaving || !posAdminPassword} className="dashboard-primary-action rounded-lg px-4 py-2.5 text-sm font-semibold disabled:opacity-50">{isSaving ? "Verifying…" : "Confirm and continue"}</button>
               </div>
             </form>
@@ -1861,12 +2010,12 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
         )}
 
         {module === "backup-restore" && (
-          <div className="mt-2 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+          <div className="mt-2 flex min-h-0 flex-1 flex-col gap-3">
             <header className="flex flex-wrap items-end justify-between gap-2">
               <div>
                 <h2 className="font-display text-xl font-semibold text-[var(--color-ink)]">Backup &amp; restore</h2>
                 <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--app-ink-muted)]">
-                  Protect salon operations, customer records, tags, and transaction history. Authentication credentials and provider secrets are excluded.
+                  Download a backup or restore saved data. Sign-in credentials are never included.
                 </p>
               </div>
               <span className={`inline-flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-[10px] font-semibold ${
@@ -1891,8 +2040,8 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
               </span>
             </header>
 
-            <div className="grid shrink-0 items-start gap-2 lg:grid-cols-[minmax(0,1.1fr)_minmax(19rem,0.9fr)]">
-              <section aria-labelledby="backup-actions-title" className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-[var(--app-shadow)]">
+            <div className="grid min-h-0 flex-1 items-stretch gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(19rem,0.9fr)]">
+              <section aria-labelledby="backup-actions-title" className="flex min-h-0 flex-col rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-[var(--app-shadow)] sm:p-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--app-accent)]">Backup manager</p>
@@ -1910,7 +2059,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                       <Download className="mt-0.5 h-4 w-4 shrink-0 text-[var(--app-accent)]" aria-hidden="true" />
                       <div>
                         <p className="text-sm font-semibold text-[var(--color-ink)]">Create a fresh backup</p>
-                        <p className="mt-0.5 text-xs leading-4 text-[var(--app-ink-muted)]">Review the data summary before downloading a complete JSON copy.</p>
+                        <p className="mt-0.5 text-xs leading-4 text-[var(--app-ink-muted)]">Download a complete JSON backup.</p>
                       </div>
                     </div>
                     <button type="button" disabled={isSaving} onClick={() => setShowBackupConfirmation(true)} className="inline-flex min-h-9 items-center gap-2 rounded-full bg-[var(--app-accent)] px-4 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50">
@@ -1921,7 +2070,7 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                 ) : (
                   <div className="mt-3 rounded-xl bg-[var(--app-canvas)] px-3 py-3">
                     <p className="text-sm font-semibold text-[var(--color-ink)]">Restore from a backup file</p>
-                    <p className="mt-0.5 text-xs leading-4 text-[var(--app-ink-muted)]">Restoring replaces all included operational data. Sign-in credentials stay unchanged.</p>
+                    <p className="mt-0.5 text-xs leading-4 text-[var(--app-ink-muted)]">Replaces saved data. Sign-in credentials stay unchanged.</p>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <label className="inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-full bg-[var(--app-accent-soft)] px-4 text-xs font-semibold text-[var(--app-accent)] transition hover:opacity-80">
                         <Upload className="h-4 w-4" aria-hidden="true" />
@@ -1957,9 +2106,9 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                   </div>
                 )}
 
-                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="mt-auto grid grid-cols-2 gap-3 pt-4 sm:grid-cols-4">
                   {[
-                    { label: "Operational records", value: backupSummaryCounts ? totalBackupRecords.toLocaleString() : "—" },
+                    { label: "Records", value: backupSummaryCounts ? totalBackupRecords.toLocaleString() : "—" },
                     { label: "USB snapshots", value: isLoading ? "…" : backupFiles.length.toString() },
                     { label: "Schedule", value: backupSchedule?.enabled ? "4 cycles" : "Off" },
                     { label: "Latest export", value: latestExport ? new Date(latestExport.created_at).toLocaleDateString() : "None yet" },
@@ -1972,15 +2121,15 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                 </div>
                 <p className="mt-2 text-[10px] leading-4 text-[var(--app-ink-muted)]">
                   {downloadState.status === "running"
-                    ? "The data summary updates as the backup is received. A percentage appears only when the browser can measure transfer size."
-                    : "Record totals reflect the latest manual export, not a live database query."}
+                    ? "Preparing backup…"
+                    : "Counts are from the latest export."}
                 </p>
               </section>
 
-              <section aria-labelledby="recent-backups-title" className="flex min-h-0 flex-col rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-[var(--app-shadow)]">
+              <section aria-labelledby="recent-backups-title" className="flex min-h-0 flex-col rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 shadow-[var(--app-shadow)] sm:p-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--app-ink-muted)]">Flash-drive snapshots</p>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--app-ink-muted)]">Snapshots</p>
                     <h3 id="recent-backups-title" className="mt-0.5 font-display text-lg font-semibold text-[var(--color-ink)]">Recent backups</h3>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1996,12 +2145,12 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                 ) : !backupFilesAvailable ? (
                   <div className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center">
                     <p className="text-xs font-medium text-[var(--color-ink)]">Backup destination unavailable</p>
-                    <p className="mt-1 text-[10px] leading-4 text-[var(--app-ink-muted)]">{backupFilesMessage ?? "Reconnect the configured flash drive or check the API backup folder."}</p>
+                    <p className="mt-1 text-[10px] leading-4 text-[var(--app-ink-muted)]">{backupFilesMessage ?? "Connect the backup drive or check the API folder."}</p>
                   </div>
                 ) : backupFiles.length === 0 ? (
                   <div className="mt-3 rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center">
                     <p className="text-xs font-medium text-[var(--color-ink)]">No scheduled snapshot files found</p>
-                    <p className="mt-1 text-[10px] leading-4 text-[var(--app-ink-muted)]">The next scheduled run will add a snapshot here.</p>
+                    <p className="mt-1 text-[10px] leading-4 text-[var(--app-ink-muted)]">A snapshot will appear after the next scheduled backup.</p>
                   </div>
                 ) : (
                   <ul className="mt-2 divide-y divide-[var(--app-border)]">
@@ -2020,13 +2169,13 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                   </ul>
                 )}
 
-                <div className="mt-2 border-t border-[var(--app-border)] pt-2">
+                <div className="mt-auto border-t border-[var(--app-border)] pt-3">
                   <div className="flex items-center justify-between gap-3">
                     <h4 className="text-xs font-semibold text-[var(--color-ink)]">Recent activity</h4>
                     <span className="text-[10px] text-[var(--app-ink-muted)]">{backupHistory.length} records</span>
                   </div>
                   {backupHistory.length === 0 ? (
-                    <p className="mt-2 text-[10px] text-[var(--app-ink-muted)]">No exports or restores recorded yet.</p>
+                    <p className="mt-2 text-[10px] text-[var(--app-ink-muted)]">No backup activity yet.</p>
                   ) : (
                     <>
                       <ol className="mt-1 space-y-1">
@@ -2044,9 +2193,42 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
               </section>
             </div>
 
+            <section aria-labelledby="operational-reset-title" className="rounded-2xl border border-clay/40 bg-[var(--app-surface)] p-4 shadow-[var(--app-shadow)] sm:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-clay">Destructive action</p>
+                  <h3 id="operational-reset-title" className="mt-0.5 font-display text-lg font-semibold text-[var(--color-ink)]">Clear transactions and staff accounts</h3>
+                  <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--app-ink-muted)]">
+                    Removes staff and customer sign-in accounts, customer records and tags, promotions and redemptions, queue/service transactions, duration and model history, and package balances. Service durations are cleared; admin accounts, the service catalog and prices, configured service chairs, and service packages stay.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={isSaving || isLoading || !operationalResetPreview?.hasRecentBackup}
+                  onClick={() => {
+                    setOperationalResetConfirmation("");
+                    setShowOperationalResetConfirmation(true);
+                  }}
+                  className="min-h-9 shrink-0 rounded-full bg-clay px-4 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Review reset
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-[var(--app-ink-muted)]">
+                <span>{operationalResetPreview?.staff.length ?? 0} staff accounts</span>
+                <span>
+                  {operationalResetPreview?.hasRecentBackup
+                    ? `Fresh backup exported ${operationalResetPreview.exportedAt
+                      ? new Date(operationalResetPreview.exportedAt).toLocaleString()
+                      : "recently"}`
+                    : "Download a fresh backup to enable reset"}
+                </span>
+              </div>
+            </section>
+
             <footer className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-2.5 text-[10px]">
               <div className="flex items-center gap-2">
-                <span className="text-[var(--app-ink-muted)]">{backupSchedule?.enabled ? `Daily · weekly · monthly · yearly at ${backupSchedule.time} ${backupSchedule.timeZone}` : "Set LYNQ_BACKUP_DIR on the API computer to enable automatic snapshots."}</span>
+                <span className="text-[var(--app-ink-muted)]">{backupSchedule?.enabled ? `Daily · weekly · monthly · yearly at ${backupSchedule.time} ${backupSchedule.timeZone}` : "Set LYNQ_BACKUP_DIR on the API computer for scheduled backups."}</span>
               </div>
               {backupSchedule?.enabled && <span className="text-[var(--app-ink-muted)]">Retention: {backupSchedule.retention.daily} daily / {backupSchedule.retention.weekly} weekly / {backupSchedule.retention.monthly} monthly / {backupSchedule.retention.yearly} yearly</span>}
               {backupSchedule?.lastRunAt && <span className="text-[var(--app-ink-muted)]">{backupSchedule.lastRunMessage} <time dateTime={backupSchedule.lastRunAt}>{new Date(backupSchedule.lastRunAt).toLocaleString()}</time></span>}
@@ -2135,6 +2317,77 @@ export function AdminBusinessModules({ module }: { module: ModuleKey }) {
                       className="min-h-10 rounded-lg bg-clay px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
                     >
                       {isSaving ? "Restoring…" : "Replace data and restore"}
+                    </button>
+                  </div>
+                </section>
+              </div>
+            )}
+            {showOperationalResetConfirmation && operationalResetPreview && (
+              <div className="fixed inset-0 z-[130] flex items-center justify-center bg-ink/45 p-4" role="presentation">
+                <section
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="operational-reset-confirmation-title"
+                  className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 shadow-2xl sm:p-6"
+                >
+                  <p className="text-xs font-bold uppercase tracking-wider text-clay">Permanent data deletion</p>
+                  <h3 id="operational-reset-confirmation-title" className="mt-1 font-display text-xl font-semibold text-[var(--color-ink)]">
+                    Clear operational history and delete staff accounts?
+                  </h3>
+                  <p className="mt-2 text-sm leading-5 text-[var(--app-ink-muted)]">
+                    This cannot be undone. Staff credentials are not included in backups and deleted accounts must be recreated manually.
+                  </p>
+                  <div className="mt-3 rounded-xl bg-[var(--app-canvas)] p-3">
+                    <p className="text-xs font-semibold text-[var(--color-ink)]">Staff accounts to delete</p>
+                    {operationalResetPreview.staff.length === 0 ? (
+                      <p className="mt-1 text-xs text-[var(--app-ink-muted)]">No staff accounts.</p>
+                    ) : (
+                      <ul className="mt-1 grid gap-x-3 gap-y-1 text-xs text-[var(--app-ink-muted)] sm:grid-cols-2">
+                        {operationalResetPreview.staff.map((staff) => (
+                          <li key={staff.username} className="truncate">{staff.fullName} ({staff.username})</li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="mt-3 text-xs font-semibold text-[var(--color-ink)]">Records to clear</p>
+                    <ul className="mt-1 grid max-h-32 gap-x-3 gap-y-1 overflow-y-auto text-xs text-[var(--app-ink-muted)] sm:grid-cols-2">
+                      {Object.entries(operationalResetPreview.counts).map(([table, count]) => (
+                        <li key={table} className="flex justify-between gap-2">
+                          <span>{table.replace(/_/g, " ")}</span>
+                          <span className="font-semibold tabular-nums">{count.toLocaleString()}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <p className="mt-3 rounded-lg bg-clay-light px-3 py-2 text-xs leading-5 text-clay">
+                    Preserved: {operationalResetPreview.preserved.join(", ")}.
+                    {" "}Package balances and promotion-redemption history will be deleted too.
+                  </p>
+                  <label className="mt-4 block text-xs font-semibold text-[var(--color-ink)]">
+                    Type <span className="font-mono">{operationalResetPreview.confirmationPhrase}</span> to continue
+                    <input
+                      type="text"
+                      autoComplete="off"
+                      value={operationalResetConfirmation}
+                      onChange={(event) => setOperationalResetConfirmation(event.target.value)}
+                      className="dashboard-filter-control mt-1 w-full text-ink"
+                    />
+                  </label>
+                  <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                    <button
+                      type="button"
+                      disabled={isSaving}
+                      onClick={() => setShowOperationalResetConfirmation(false)}
+                      className="min-h-10 rounded-lg border border-[var(--app-border)] px-4 text-sm font-semibold text-[var(--color-ink)] hover:bg-[var(--app-surface-soft)] disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSaving || !operationalResetPreview.hasRecentBackup || operationalResetConfirmation !== operationalResetPreview.confirmationPhrase}
+                      onClick={() => void resetOperationalData()}
+                      className="min-h-10 rounded-lg bg-clay px-4 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isSaving ? "Clearing data…" : "Delete accounts and clear data"}
                     </button>
                   </div>
                 </section>

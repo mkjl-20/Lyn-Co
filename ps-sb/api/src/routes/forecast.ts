@@ -694,12 +694,12 @@ forecastRouter.get("/now-serving", async (req, res) => {
         .eq("status", "waiting"),
       supabase
         .from("stations")
-        .select("id, label, category")
+        .select("id, label, category, home_staff_id")
         .eq("is_active", true)
         .order("label", { ascending: true }),
       supabase
         .from("queue_entries")
-        .select("id, ticket_number, customer_name, position, status, created_at, priority_type, arrival_type, queue_entry_services ( id, status, service_stage, service_started_at, station_id, station_queue_position, customer_service_seat_id, staff_update, started_at, estimated_duration, services ( name, category ) )")
+        .select("id, ticket_number, customer_name, position, status, created_at, priority_type, arrival_type, queue_entry_services ( id, status, service_stage, service_started_at, station_id, station_queue_position, customer_service_seat_id, assigned_staff_id, staff_update, started_at, estimated_duration, services ( name, category ) )")
         .in("status", ["waiting", "in_service"])
         .order("position", { ascending: true, nullsFirst: false }),
       supabase
@@ -725,6 +725,24 @@ forecastRouter.get("/now-serving", async (req, res) => {
       .map((item) => item.station_id)
       .filter((id): id is string => Boolean(id)))];
     const stationLabels = new Map<string, string>();
+    const assignedStaffIds = [...new Set([
+      ...(stationRes.data ?? []).map((station) => station.home_staff_id),
+      ...(activeStationEntriesRes.data ?? []).flatMap((entry) =>
+        (entry.queue_entry_services ?? []).map((item) => item.assigned_staff_id)
+      ),
+    ].filter((id): id is string => Boolean(id)))];
+    const staffNames = new Map<string, string>();
+    if (assignedStaffIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from("profiles")
+        .select("id, full_name")
+        .in("id", assignedStaffIds);
+      if (profilesError) throw profilesError;
+      for (const profile of profiles ?? []) {
+        if (profile.full_name) staffNames.set(profile.id, profile.full_name);
+      }
+    }
+
     const customerSeatIds = [...new Set(serviceItems
       .map((item) => item.customer_service_seat_id)
       .filter((id): id is string => Boolean(id)))];
@@ -790,6 +808,10 @@ forecastRouter.get("/now-serving", async (req, res) => {
               id: item.id,
               ticketNumber: entry.ticket_number,
               customerName: entry.customer_name,
+              customerFirstName: entry.customer_name.trim().split(/\s+/)[0] || "Customer",
+              assignedStaffName: item.assigned_staff_id
+                ? staffNames.get(item.assigned_staff_id) ?? null
+                : null,
               serviceSeatLabel: item.customer_service_seat_id
                 ? customerSeatLabels.get(item.customer_service_seat_id) ?? null
                 : null,
@@ -824,9 +846,18 @@ forecastRouter.get("/now-serving", async (req, res) => {
         id: station.id,
         label: station.label,
         category: station.category,
+        staffName: station.home_staff_id ? staffNames.get(station.home_staff_id) ?? null : null,
         status: current ? "in_service" : nextUp[0]?.status ?? "available",
-        current,
-        nextUp: nextUp.slice(0, 5),
+        current: current ? {
+          ...current,
+          remainingMinutes: Math.ceil(currentRemainingMinutes),
+        } : null,
+        nextUp: nextUp.slice(0, 5).map((customer) => ({
+          ...customer,
+          assignedStaffName: customer.assignedStaffName ?? (
+            station.home_staff_id ? staffNames.get(station.home_staff_id) ?? null : null
+          ),
+        })),
         waitingCount: nextUp.length,
         estimatedWaitMinutes: Math.round((currentRemainingMinutes + nextUp.reduce(
           (total, customer) => total + customer.estimatedDuration,
@@ -863,16 +894,24 @@ forecastRouter.get("/now-serving", async (req, res) => {
           id: station.id,
           label: station.label,
           category: station.category,
+          staffName: station.staffName,
           status: station.status,
           current: station.current
             ? {
+              id: station.current.id,
               ticketNumber: station.current.ticketNumber,
+              customerName: station.current.customerFirstName,
+              assignedStaffName: station.current.assignedStaffName ?? station.staffName,
               serviceName: station.current.serviceName,
               serviceSeatLabel: station.current.serviceSeatLabel,
+              remainingMinutes: station.current.remainingMinutes,
             }
             : null,
           nextUp: station.nextUp.map((customer) => ({
+            id: customer.id,
             ticketNumber: customer.ticketNumber,
+            customerName: customer.customerFirstName,
+            assignedStaffName: customer.assignedStaffName,
             serviceName: customer.serviceName,
             serviceSeatLabel: customer.serviceSeatLabel,
           })),

@@ -40,35 +40,38 @@ export function StationQueueCounter() {
   }, []);
 
   useEffect(() => {
-    void loadStations();
+    const initialLoad = window.setTimeout(() => void loadStations(), 0);
     const timer = window.setInterval(() => void loadStations(), 10_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(initialLoad);
+      window.clearInterval(timer);
+    };
   }, [loadStations]);
 
   return (
-    <section className="rounded-xl border border-mist bg-white p-4 sm:p-5" aria-label="Queues by station" aria-busy={isLoading}>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
+    <section className="rounded-xl border border-mist bg-white p-3" aria-label="Queues by station" aria-busy={isLoading}>
+      <div className="flex flex-wrap items-baseline justify-between gap-1">
         <h2 className="font-display text-base font-semibold text-ink">Queues by station</h2>
         <p className="text-[10px] text-ink/45">Updates every 10 seconds</p>
       </div>
       {errorMessage ? (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2" role="alert">
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-1" role="alert">
           <p className="text-xs text-clay">{errorMessage}</p>
           <button type="button" onClick={() => void loadStations()} className="min-h-11 rounded-md px-3 text-xs font-semibold text-sage-deep">
             Retry
           </button>
         </div>
       ) : isLoading ? (
-        <p className="mt-3 text-sm text-ink/50" role="status">Loading station counts…</p>
+        <p className="mt-1 text-sm text-ink/50" role="status">Loading station counts…</p>
       ) : (
         <>
           {stations.length === 0 ? (
-            <p className="mt-3 text-sm text-ink/50">No active stations.</p>
+            <p className="mt-1 text-sm text-ink/50">No active stations.</p>
           ) : (
-            <ul className="mt-2 divide-y divide-mist">
+            <ul className="mt-1 divide-y divide-mist">
               {stations.map((station) => (
-                <li key={station.id} className="py-3">
-                  <div className="flex items-start justify-between gap-3">
+                <li key={station.id} className="py-1.5">
+                  <div className="flex items-start justify-between gap-1">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-ink">{station.label}</p>
                       <p className="truncate text-xs text-ink/50">{station.category}</p>
@@ -78,10 +81,10 @@ export function StationQueueCounter() {
                     </StatusBadge>
                   </div>
                   {station.current && (
-                    <p className="mt-2 text-xs text-ink/65">Serving {formatTicketNumber(station.current.ticketNumber)} · {station.current.serviceName}</p>
+                    <p className="mt-1 text-xs text-ink/65">Serving {formatTicketNumber(station.current.ticketNumber)} · {station.current.serviceName}</p>
                   )}
                   {station.nextUp.length > 0 ? (
-                    <ol className="mt-2 flex flex-wrap gap-2" aria-label={`Queue for ${station.label}`}>
+                    <ol className="mt-1 flex flex-wrap gap-1" aria-label={`Queue for ${station.label}`}>
                       {station.nextUp.slice(0, 3).map((customer, index) => (
                         <li key={`${station.id}-${customer.ticketNumber}`} className="rounded-md bg-porcelain px-2.5 py-1.5 text-xs text-ink/75">
                           {index === 0 ? "Next " : ""}{formatTicketNumber(customer.ticketNumber)} · {customer.serviceName}
@@ -92,7 +95,7 @@ export function StationQueueCounter() {
                       )}
                     </ol>
                   ) : (
-                    <p className="mt-2 text-xs text-ink/50">No one waiting for this station.</p>
+                    <p className="mt-1 text-xs text-ink/50">No one waiting for this station.</p>
                   )}
                 </li>
               ))}

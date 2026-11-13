@@ -1,32 +1,27 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { createStaffAccount } from "../services/adminService";
-import { supabaseClient } from "../../../../../shared/lib/supabaseClient";
 import { PasswordVisibilityButton } from "../../../../../shared/components/PasswordVisibilityButton";
 
 interface StaffRoleOption {
   role_key: string;
   label: string;
-  is_active: boolean;
 }
+
+const STAFF_ROLES: StaffRoleOption[] = [
+  { role_key: "hairstylist", label: "Hairstylist" },
+  { role_key: "manicurist", label: "Manicurist" },
+  { role_key: "pedicurist", label: "Pedicurist" },
+  { role_key: "receptionist", label: "Receptionist" },
+];
 
 export function RegisterStaffDialog({ onSuccess }: { onSuccess: () => void }) {
   const [username, setUsername] = useState("");
   const [fullName, setFullName] = useState("");
-  const [staffRole, setStaffRole] = useState("");
-  const [roles, setRoles] = useState<StaffRoleOption[]>([]);
+  const [staffRole, setStaffRole] = useState(STAFF_ROLES[0].role_key);
   const [temporaryPassword, setTemporaryPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  useEffect(() => {
-    void supabaseClient.from("staff_role_catalog").select("role_key, label, is_active").eq("is_active", true).order("label")
-      .then(({ data }) => {
-        const availableRoles = (data ?? []) as StaffRoleOption[];
-        setRoles(availableRoles);
-        setStaffRole(availableRoles[0]?.role_key ?? "");
-      });
-  }, []);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -65,7 +60,7 @@ export function RegisterStaffDialog({ onSuccess }: { onSuccess: () => void }) {
         className="dashboard-filter-control w-full"
         required
       >
-        {roles.map((role) => <option key={role.role_key} value={role.role_key}>{role.label}</option>)}
+        {STAFF_ROLES.map((role) => <option key={role.role_key} value={role.role_key}>{role.label}</option>)}
       </select>
       <div className="relative">
         <input

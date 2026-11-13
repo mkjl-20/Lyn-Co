@@ -9,6 +9,7 @@ test("the operational backup manifest covers its tables without auth credentials
   assert.ok(BACKUP_TABLES.includes("customer_tag_assignments"));
   assert.ok(BACKUP_TABLES.includes("queue_entries"));
   assert.ok(BACKUP_TABLES.includes("pos_transaction_adjustments"));
+  assert.ok(!new Set<string>(BACKUP_TABLES).has("staff_role_catalog"));
   assert.ok(!new Set<string>(BACKUP_TABLES).has("auth.users"));
 });
 

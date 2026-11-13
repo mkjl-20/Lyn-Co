@@ -1,15 +1,18 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, ShieldCheck } from "lucide-react";
+import type { Session } from "@supabase/supabase-js";
+import { ArrowRight, Camera, ChevronLeft, KeyRound, Pencil, Save, ShieldCheck, UserRound } from "lucide-react";
 import { supabaseClient } from "@/shared/lib/supabaseClient";
 import { apiRequest } from "@/shared/lib/apiClient";
 import { BackButton } from "@/shared/components/BackButton";
+import { ProfileEditDialog } from "@/shared/components/ProfileEditDialog";
 import { PasswordVisibilityButton } from "@/shared/components/PasswordVisibilityButton";
-import { PortalAccountMenu } from "@/shared/components/PortalAccountMenu";
-import { useAuth } from "@/shared/context/AuthContext";
+import { useAuth } from "@/shared/context/useAuth";
 import { PhilippinePhoneInput } from "@/shared/components/PhilippinePhoneInput";
+import { useFeedback } from "@/shared/components/FeedbackContext";
+import { removeObsoleteProfileAvatars, uploadProfileAvatar } from "@/shared/lib/profileAvatar";
 
-type AccountMode = "login" | "register" | "verify-signup" | "verify-email-signup" | "verify-password" | "verify-phone-link" | "set-password" | "privacy-consent";
+type AccountMode = "login" | "register" | "verify-signup" | "verify-email-signup" | "verify-password" | "verify-phone-link" | "verify-profile-phone" | "set-password" | "privacy-consent";
 type SignupMethod = "email" | "phone";
 
 const CUSTOMER_ACCOUNT_PRIVACY_NOTICE_VERSION = "customer-account-v1";
@@ -34,7 +37,8 @@ function normalizePhilippinePhone(value: string) {
 
 export function CustomerAccountPage() {
   const navigate = useNavigate();
-  const { user, currentUser, loading: authLoading, logout } = useAuth();
+  const { confirm } = useFeedback();
+  const { user, loading: authLoading } = useAuth();
   const customerUser = user?.user_metadata?.account_role === "customer" ? user : null;
   const customerName = String(customerUser?.user_metadata?.full_name ?? customerUser?.email?.split("@")[0] ?? "Customer");
   const customerPhone = String(
@@ -42,6 +46,12 @@ export function CustomerAccountPage() {
       ?? normalizePhilippinePhone(customerUser?.phone ?? "")?.local
       ?? "Not provided",
   );
+  const customerContactEmail = typeof customerUser?.user_metadata?.contact_email === "string"
+    ? customerUser.user_metadata.contact_email
+    : customerUser?.email && !customerUser.email.endsWith("@lynq.internal") ? customerUser.email : "";
+  const customerAvatarUrl = typeof customerUser?.user_metadata?.avatar_url === "string"
+    ? customerUser.user_metadata.avatar_url
+    : "";
   const [mode, setMode] = useState<AccountMode>("login");
   const [signupMethod, setSignupMethod] = useState<SignupMethod>("email");
   const [displayName, setDisplayName] = useState("");
@@ -54,6 +64,7 @@ export function CustomerAccountPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
+  const verificationInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const [pendingPhone, setPendingPhone] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -65,21 +76,51 @@ export function CustomerAccountPage() {
   const [transactionsError, setTransactionsError] = useState<string | null>(null);
   const [accountPrivacyChecking, setAccountPrivacyChecking] = useState(Boolean(customerUser));
   const [accountPrivacyError, setAccountPrivacyError] = useState<string | null>(null);
-  const [isSwitchingToCustomer, setIsSwitchingToCustomer] = useState(false);
+  const [isEditingCustomerAccount, setIsEditingCustomerAccount] = useState(false);
+  const [customerProfileName, setCustomerProfileName] = useState("");
+  const [customerProfilePhone, setCustomerProfilePhone] = useState("");
+  const [isSavingCustomerProfile, setIsSavingCustomerProfile] = useState(false);
+  const [pendingProfileUpdate, setPendingProfileUpdate] = useState<{
+    displayName: string;
+    contactNumber: string;
+    contactEmail: string;
+    avatarFile: File | null;
+    removeAvatar: boolean;
+  } | null>(null);
+  const [customerProfileEmail, setCustomerProfileEmail] = useState("");
+  const [customerAvatarFile, setCustomerAvatarFile] = useState<File | null>(null);
+  const [customerAvatarPreview, setCustomerAvatarPreview] = useState("");
+  const [removeCustomerAvatar, setRemoveCustomerAvatar] = useState(false);
+  const isVerificationMode = mode === "verify-signup"
+    || mode === "verify-email-signup"
+    || mode === "verify-password"
+    || mode === "verify-phone-link"
+    || mode === "verify-profile-phone"
+    || mode === "set-password";
 
-  async function handleCustomerSignOut() {
-    await logout();
-    navigate("/");
-  }
+  async function handleCancelVerification() {
+    if (!await confirm({
+      title: "Cancel verification?",
+      message: "Your verification will be stopped and the code you entered will be cleared.",
+      confirmLabel: "Cancel verification",
+      cancelLabel: "Keep verifying",
+      destructive: true,
+    })) return;
 
-  async function handleSwitchToCustomer() {
-    setIsSwitchingToCustomer(true);
+    setVerificationCode("");
+    setPendingPhone("");
+    setPendingEmail("");
+    setPendingProfileUpdate(null);
+    setPassword("");
+    setConfirmPassword("");
+    setPrivacyConsentAccepted(false);
     setErrorMessage(null);
-    try {
-      await logout();
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to sign out of the staff account.");
-      setIsSwitchingToCustomer(false);
+    setMessage(null);
+    if (customerUser) {
+      setMode("login");
+    } else {
+      setMode("login");
+      navigate("/");
     }
   }
 
@@ -217,7 +258,7 @@ export function CustomerAccountPage() {
     setErrorMessage(null);
     setMessage(null);
     try {
-      const { error } = mode === "verify-phone-link"
+      const { error } = mode === "verify-phone-link" || mode === "verify-profile-phone"
         ? await supabaseClient.auth.updateUser({ phone: phone.international })
         : await supabaseClient.auth.signInWithOtp({
             phone: phone.international,
@@ -233,6 +274,13 @@ export function CustomerAccountPage() {
   }
 
   async function beginPasswordChange() {
+    if (!await confirm({
+      title: "Change your password?",
+      message: "We’ll send a verification code or reset link so you can set a new password. Continue?",
+      confirmLabel: "Continue",
+      cancelLabel: "Not now",
+    })) return;
+
     const linkedPhone = normalizePhilippinePhone(customerUser?.phone ?? "");
     if (linkedPhone) {
       await sendPasswordVerification(linkedPhone.local, "change");
@@ -279,6 +327,98 @@ export function CustomerAccountPage() {
       setErrorMessage(error instanceof Error ? error.message : "Unable to verify your mobile number.");
     } finally {
       setIsSendingCode(false);
+    }
+  }
+
+  async function saveCustomerProfile(
+    displayNameValue: string,
+    contactNumberValue: string,
+    contactEmailValue: string,
+    avatarFile: File | null,
+    removeAvatar: boolean,
+  ) {
+    if (!customerUser) throw new Error("Sign in to update your customer profile.");
+    const contactEmail = contactEmailValue.trim().toLowerCase();
+    if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+      throw new Error("Enter a valid contact email address or leave it blank.");
+    }
+    const avatarUrl = avatarFile
+      ? await uploadProfileAvatar(customerUser.id, avatarFile)
+      : removeAvatar ? null : customerAvatarUrl || null;
+    const response = await apiRequest<{ account: { display_name: string; contact_number: string } }>("/api/customer/account", {
+      method: "PATCH",
+      body: JSON.stringify({ displayName: displayNameValue, contactNumber: contactNumberValue }),
+    });
+    const { error } = await supabaseClient.auth.updateUser({
+      data: {
+        ...customerUser.user_metadata,
+        full_name: response.account.display_name,
+        contact_number: response.account.contact_number,
+        contact_email: contactEmail || null,
+        avatar_url: avatarUrl,
+      },
+    });
+    if (error) throw error;
+    await removeObsoleteProfileAvatars(customerUser.id, avatarUrl);
+    setCustomerProfileName(response.account.display_name);
+    setCustomerProfilePhone(response.account.contact_number);
+    setCustomerProfileEmail(contactEmail);
+    setCustomerAvatarFile(null);
+    setCustomerAvatarPreview("");
+    setRemoveCustomerAvatar(false);
+    setIsEditingCustomerAccount(false);
+    setPendingProfileUpdate(null);
+    setMessage("Profile information updated.");
+  }
+
+  async function handleSaveCustomerProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!customerUser || isSavingCustomerProfile) return;
+    const name = customerProfileName.trim();
+    const phone = normalizePhilippinePhone(customerProfilePhone);
+    const email = customerProfileEmail.trim().toLowerCase();
+    if (!name || name.length > 100 || !phone) {
+      setErrorMessage("Enter your name and a valid Philippine mobile number.");
+      return;
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setErrorMessage("Enter a valid contact email address or leave it blank.");
+      return;
+    }
+    if (!await confirm({
+      title: "Save profile changes?",
+      message: "Your name, contact details, and profile photo will be updated. If your phone number changed, you will verify it before the update is completed.",
+      confirmLabel: "Save changes",
+      cancelLabel: "Review changes",
+    })) return;
+
+    setIsSavingCustomerProfile(true);
+    setErrorMessage(null);
+    setMessage(null);
+    try {
+      const currentAuthPhone = normalizePhilippinePhone(customerUser.phone ?? "");
+      if (!currentAuthPhone || currentAuthPhone.international !== phone.international) {
+        const { error } = await supabaseClient.auth.updateUser({ phone: phone.international });
+        if (error) throw error;
+        setPendingPhone(phone.local);
+        setPendingProfileUpdate({
+          displayName: name,
+          contactNumber: phone.local,
+          contactEmail: email,
+          avatarFile: customerAvatarFile,
+          removeAvatar: removeCustomerAvatar,
+        });
+        setVerificationCode("");
+        setIsEditingCustomerAccount(false);
+        setMode("verify-profile-phone");
+        setMessage(`Verify your new mobile number ${phone.local} to save the profile change.`);
+        return;
+      }
+      await saveCustomerProfile(name, phone.local, email, customerAvatarFile, removeCustomerAvatar);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to update your customer profile.");
+    } finally {
+      setIsSavingCustomerProfile(false);
     }
   }
 
@@ -349,7 +489,7 @@ export function CustomerAccountPage() {
         if (error) throw error;
         if (!data.user) throw new Error("The verification code was accepted, but no account session was returned.");
         await finishAccountSetup(data.user, true);
-      } else if (mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link") {
+      } else if (mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-profile-phone") {
         const phone = normalizePhilippinePhone(pendingPhone);
         if (!phone || !/^\d{6}$/.test(verificationCode)) {
           setErrorMessage("Enter the six-digit SMS verification code.");
@@ -366,12 +506,24 @@ export function CustomerAccountPage() {
         if (mode === "verify-signup") {
           await finishAccountSetup(data.user, true);
         } else {
-          setMode("set-password");
-          setPassword("");
-          setConfirmPassword("");
-          setMessage(mode === "verify-phone-link"
-            ? "Your mobile number is verified and linked. Choose a new password."
-            : "Your number is verified. Choose a new password.");
+          if (mode === "verify-profile-phone") {
+            if (!pendingProfileUpdate) throw new Error("Your profile changes expired. Please edit and submit them again.");
+            await saveCustomerProfile(
+              pendingProfileUpdate.displayName,
+              pendingProfileUpdate.contactNumber,
+              pendingProfileUpdate.contactEmail,
+              pendingProfileUpdate.avatarFile,
+              pendingProfileUpdate.removeAvatar,
+            );
+            setMode("login");
+          } else {
+            setMode("set-password");
+            setPassword("");
+            setConfirmPassword("");
+            setMessage(mode === "verify-phone-link"
+              ? "Your mobile number is verified and linked. Choose a new password."
+              : "Your number is verified. Choose a new password.");
+          }
         }
       } else if (mode === "set-password") {
         if (password.length < 8) {
@@ -481,9 +633,14 @@ export function CustomerAccountPage() {
           setErrorMessage("Enter a valid Philippine mobile number. Existing accounts may still use their email.");
           return;
         }
-        const { data, error } = loginPhone
-          ? await supabaseClient.auth.signInWithPassword({ phone: loginPhone.international, password })
-          : await supabaseClient.auth.signInWithPassword({ email: identifier.trim().toLowerCase(), password });
+        const { session } = await apiRequest<{ session: Session }>("/api/customer/login", {
+          method: "POST",
+          body: JSON.stringify({
+            identifier: loginPhone?.international ?? identifier.trim().toLowerCase(),
+            password,
+          }),
+        });
+        const { data, error } = await supabaseClient.auth.setSession(session);
         if (error) throw error;
         if (!data.user) throw new Error("Unable to sign in.");
         setAccountPrivacyChecking(true);
@@ -497,87 +654,192 @@ export function CustomerAccountPage() {
     }
   }
 
-  if (!authLoading && currentUser && !customerUser) {
-    return (
-      <main className="customer-gradient-page flex min-h-screen items-center justify-center px-4 py-10 text-ink">
-        <section className="w-full max-w-md rounded-2xl border border-mist bg-white p-6 shadow-sm sm:p-8">
-          <BackButton to="/" label="Back to booking" />
-          <h1 className="mt-6 font-display text-2xl font-semibold">Switch to customer account</h1>
-          <p className="mt-2 text-sm leading-6 text-ink/65">Sign out of the {currentUser.accountRole} account to continue as a customer.</p>
-          {errorMessage && <p role="alert" className="mt-4 rounded-lg bg-clay-light px-3 py-2 text-sm text-clay">{errorMessage}</p>}
-          <button
-            type="button"
-            disabled={isSwitchingToCustomer}
-            onClick={() => void handleSwitchToCustomer()}
-            className="dashboard-primary-action mt-5 min-h-11 w-full rounded-lg px-4 py-2.5 text-sm font-semibold disabled:cursor-wait disabled:opacity-50"
-          >
-            {isSwitchingToCustomer ? "Signing out…" : "Sign out and continue"}
-          </button>
-        </section>
-      </main>
-    );
-  }
-
   return (
-    <main className="customer-gradient-page flex min-h-screen items-center justify-center px-4 py-3 text-ink sm:py-4">
-      <section className="w-full max-w-[430px] rounded-[1.25rem] border border-mist bg-white p-4 shadow-[0_18px_50px_rgba(30,35,30,0.1)] sm:p-5">
-        <div className="flex items-center justify-between gap-3">
-          {customerUser && <BackButton to="/" label="Back to booking" />}
-          {customerUser && mode === "login" && (
-            <PortalAccountMenu
-              fullName={customerName}
-              identifier={customerUser.email ?? "Customer account"}
-              roleLabel="Customer"
-              isActive
-              accountHref="/customer-account"
-              onSignOut={handleCustomerSignOut}
-            />
-          )}
-        </div>
+    <main className={`customer-gradient-page flex justify-center px-2 py-2 text-ink sm:px-4 sm:py-3 ${
+      customerUser && mode === "login" ? "account-profile-shell h-dvh min-h-0 items-start overflow-y-auto overscroll-contain" : "min-h-screen items-center"
+    }`}>
+      <section className={`min-w-0 w-full ${
+        customerUser && mode === "login"
+          ? "max-w-[390px]"
+          : mode === "login"
+            ? "max-w-[360px] rounded-[1.25rem] border border-mist bg-white p-2.5 shadow-[0_18px_50px_rgba(30,35,30,0.1)] sm:p-4"
+            : "max-w-[430px] rounded-[1.25rem] border border-mist bg-white p-3 shadow-[0_18px_50px_rgba(30,35,30,0.1)] sm:p-5"
+      }`}>
         {authLoading && !customerUser && (
           <p role="status" className="mt-6 text-sm text-ink/60">Loading your account…</p>
         )}
         {customerUser && mode === "login" && accountPrivacyChecking ? (
           <p role="status" className="mt-6 text-sm text-ink/60">Checking your account privacy settings…</p>
         ) : customerUser && mode === "login" && accountPrivacyError ? (
-          <p role="alert" className="mt-6 rounded-lg bg-clay-light px-3 py-2 text-sm text-clay">
+          <p role="alert" className="dashboard-error-message mt-6">
             {accountPrivacyError} Refresh the page to retry before viewing your account.
           </p>
         ) : customerUser && mode === "login" ? (
-          <section aria-labelledby="customer-account-title" className="mt-6">
-            <h1 id="customer-account-title" className="font-display text-2xl font-semibold">Your customer account</h1>
-            <p className="mt-2 text-sm text-ink/60">Your saved contact details and salon visit history.</p>
-            <dl className="mt-5 space-y-3 rounded-xl border border-mist bg-porcelain/40 p-4 text-sm">
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink/60">Name</dt>
-                <dd className="text-right font-medium">{customerName}</dd>
+          <>
+            <section aria-labelledby="customer-account-title" className="overflow-hidden rounded-2xl border border-ink/10 bg-white shadow-sm">
+              <div className="relative h-20 bg-[var(--app-surface-soft)] sm:h-24">
+                <BackButton
+                  to="/"
+                  label="Back to booking"
+                  className="absolute left-3 top-1.5 z-10 text-ink hover:text-sage-deep sm:left-4 sm:top-2"
+                />
+                <span className="absolute bottom-0 left-3 z-10 flex h-14 w-14 translate-y-1/2 items-center justify-center overflow-hidden rounded-2xl border-2 border-white bg-ink text-white shadow-sm sm:left-5 sm:h-16 sm:w-16">
+                  {customerAvatarUrl
+                    ? <img src={customerAvatarUrl} alt="" className="h-full w-full object-cover" />
+                    : <UserRound size={25} aria-hidden="true" />}
+                </span>
               </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink/60">Email</dt>
-                <dd className="break-all text-right font-medium">
-                  {customerUser.email ?? customerUser.user_metadata?.contact_email ?? "Not provided"}
-                </dd>
+              <div className="px-3 pb-3 pt-7 sm:px-4 sm:pb-4 sm:pt-8">
+                <div className="flex items-center justify-between gap-2">
+                  <h1 id="customer-account-title" className="min-w-0 break-words font-display text-xl font-semibold leading-tight sm:text-2xl">{customerProfileName || customerName}</h1>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      aria-label="Edit profile information"
+                      title="Edit profile information"
+                      onClick={() => {
+                        setCustomerProfileName(customerName);
+                        setCustomerProfilePhone(customerPhone);
+                        setCustomerProfileEmail(customerContactEmail);
+                        setCustomerAvatarFile(null);
+                        setCustomerAvatarPreview(customerAvatarUrl);
+                        setRemoveCustomerAvatar(false);
+                        setErrorMessage(null);
+                        setMessage(null);
+                        setIsEditingCustomerAccount(true);
+                      }}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-ink/10 text-ink/65 transition hover:bg-porcelain hover:text-ink"
+                    >
+                      <Pencil size={16} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={isSendingCode ? "Sending password verification" : "Change password"}
+                      title="Change password"
+                      onClick={() => void beginPasswordChange()}
+                      disabled={isSendingCode || customerPhone === "Not provided"}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-ink/10 text-ink/70 transition-colors hover:bg-porcelain hover:text-ink disabled:opacity-50"
+                    >
+                      <KeyRound size={16} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-1 break-all text-xs text-ink/55 sm:text-sm">
+                  {customerContactEmail || "Customer account"}
+                </p>
+                {errorMessage && <p role="alert" className="dashboard-error-message mt-3">{errorMessage}</p>}
+                {message && <p role="status" className="mt-3 rounded-lg bg-success-soft px-3 py-2 text-sm text-success">{message}</p>}
+                <dl className="mt-3 grid gap-2 border-t border-mist pt-2.5 text-sm sm:grid-cols-2 sm:pt-3">
+                  <div className="min-w-0 rounded-lg bg-[var(--app-canvas)] px-3 py-2">
+                    <dt className="text-[11px] text-ink/60">Name</dt>
+                    <dd className="mt-0.5 break-words font-medium">{customerProfileName || customerName}</dd>
+                  </div>
+                  <div className="min-w-0 rounded-lg bg-[var(--app-canvas)] px-3 py-2">
+                    <dt className="text-[11px] text-ink/60">Email</dt>
+                    <dd className="mt-0.5 break-all font-medium">{customerContactEmail || "Not provided"}</dd>
+                  </div>
+                  <div className="min-w-0 rounded-lg bg-[var(--app-canvas)] px-3 py-2 sm:col-span-2">
+                    <dt className="text-[11px] text-ink/60">Mobile number</dt>
+                    <dd className="mt-0.5 break-words font-medium">{customerProfilePhone || customerPhone}</dd>
+                  </div>
+                </dl>
               </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-ink/60">Mobile number</dt>
-                <dd className="text-right font-medium">{customerPhone}</dd>
-              </div>
-            </dl>
-            <button
-              type="button"
-              onClick={() => void beginPasswordChange()}
-              disabled={isSendingCode || customerPhone === "Not provided"}
-              className="mt-4 w-full rounded-lg border border-sage-deep px-4 py-2.5 text-sm font-semibold text-sage-deep transition-colors hover:bg-sage-light disabled:opacity-50"
-            >
-              {isSendingCode ? "Sending verification code…" : "Change password"}
-            </button>
-          </section>
+            </section>
+            {isEditingCustomerAccount && (
+              <ProfileEditDialog
+                title="Edit profile information"
+                description="Keep your contact details up to date. Email and photo are optional."
+                onClose={() => setIsEditingCustomerAccount(false)}
+              >
+                <form onSubmit={(event) => void handleSaveCustomerProfile(event)} className="mt-4 max-h-[70dvh] space-y-3 overflow-y-auto">
+                  {errorMessage && <p role="alert" className="dashboard-error-message">{errorMessage}</p>}
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-ink text-white">
+                      {customerAvatarPreview
+                        ? <img src={customerAvatarPreview} alt="Profile preview" className="h-full w-full object-cover" />
+                        : <UserRound size={24} aria-hidden="true" />}
+                    </span>
+                    <div className="min-w-0">
+                      <label className="inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-lg border border-mist px-3 text-xs font-semibold text-ink/75 hover:bg-porcelain">
+                        <Camera size={15} aria-hidden="true" />
+                        Change photo
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          className="sr-only"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            if (!file) return;
+                            if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+                              setErrorMessage("Choose a JPG, PNG, or WebP profile photo.");
+                              return;
+                            }
+                            if (file.size > 2 * 1024 * 1024) {
+                              setErrorMessage("Profile photos must be 2 MB or smaller.");
+                              return;
+                            }
+                            setErrorMessage(null);
+                            setCustomerAvatarFile(file);
+                            setCustomerAvatarPreview(URL.createObjectURL(file));
+                            setRemoveCustomerAvatar(false);
+                          }}
+                        />
+                      </label>
+                      {(customerAvatarPreview || customerAvatarFile) && (
+                        <button type="button" onClick={() => {
+                          setCustomerAvatarFile(null);
+                          setCustomerAvatarPreview("");
+                          setRemoveCustomerAvatar(true);
+                        }} className="ml-2 text-xs font-semibold text-clay underline">
+                          Remove
+                        </button>
+                      )}
+                      <p className="mt-1 text-[11px] text-ink/50">Optional · JPG, PNG, or WebP · up to 2 MB</p>
+                    </div>
+                  </div>
+                  <label className="block text-xs font-semibold text-ink/70">
+                    Full name
+                    <input required maxLength={100} value={customerProfileName} onChange={(event) => setCustomerProfileName(event.target.value)} className="dashboard-filter-control mt-1.5 w-full text-sm" />
+                  </label>
+                  <label className="block text-xs font-semibold text-ink/70">
+                    Email <span className="font-normal text-ink/50">Optional</span>
+                    <input type="email" maxLength={254} value={customerProfileEmail} onChange={(event) => setCustomerProfileEmail(event.target.value)} className="dashboard-filter-control mt-1.5 w-full text-sm" />
+                  </label>
+                  <label className="block text-xs font-semibold text-ink/70">
+                    Mobile number
+                    <PhilippinePhoneInput required value={customerProfilePhone} onChange={setCustomerProfilePhone} className="mt-1.5" />
+                    <span className="mt-1 block font-normal text-ink/55">A new number must be verified by SMS.</span>
+                  </label>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button type="button" onClick={() => setIsEditingCustomerAccount(false)} className="form-cancel-action min-h-10 rounded-lg px-4 text-sm font-semibold">
+                      Cancel
+                    </button>
+                    <button type="submit" disabled={isSavingCustomerProfile} className="dashboard-primary-action inline-flex min-h-10 items-center gap-2 rounded-lg px-4 text-sm font-semibold disabled:opacity-50">
+                      <Save size={15} aria-hidden="true" />
+                      {isSavingCustomerProfile ? "Saving…" : "Save changes"}
+                    </button>
+                  </div>
+                </form>
+              </ProfileEditDialog>
+            )}
+          </>
         ) : !authLoading || mode !== "login" ? (
           <>
         <div className="mt-3 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="flex items-center gap-1 font-display text-xl font-semibold leading-tight">
-              {!customerUser && <BackButton to="/" label="Back to booking" className="-ml-2" />}
+              {!customerUser && !isVerificationMode && <BackButton to="/" label="Back to booking" className="-ml-2" />}
+              {isVerificationMode && (
+                <button
+                  type="button"
+                  aria-label="Cancel verification and go back"
+                  title="Back"
+                  onClick={() => void handleCancelVerification()}
+                  className="-ml-2 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ink/65 transition-colors hover:bg-porcelain hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+                >
+                  <ChevronLeft size={24} aria-hidden="true" />
+                </button>
+              )}
               {mode === "register" ? "Create your account"
             : mode === "verify-signup" ? "Verify your mobile number"
               : mode === "verify-email-signup" ? "Verify your email"
@@ -590,7 +852,7 @@ export function CustomerAccountPage() {
               <p className="mt-1 text-xs leading-5 text-ink/60">
                 {mode === "privacy-consent"
                   ? "Review and accept this notice to continue."
-                  : mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-email-signup"
+                  : mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-profile-phone" || mode === "verify-email-signup"
                     ? `Enter the six-digit code sent to ${mode === "verify-email-signup" ? pendingEmail : pendingPhone}.`
                     : mode === "set-password"
                       ? "Choose a password with at least 8 characters."
@@ -620,19 +882,8 @@ export function CustomerAccountPage() {
           )}
         </div>
         {message && <p role="status" className="mt-4 rounded-lg bg-success-soft px-3 py-2 text-sm text-success">{message}</p>}
-        {errorMessage && <p role="alert" className="mt-4 rounded-lg bg-clay-light px-3 py-2 text-sm text-clay">{errorMessage}</p>}
-        {(mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-email-signup") && (
-          <button
-            type="button"
-            onClick={() => void handleResendCode()}
-            disabled={isSendingCode}
-            className="mt-3 w-full rounded-lg border border-sage-deep px-4 py-2.5 text-sm font-semibold text-sage-deep transition-colors hover:bg-sage-light disabled:opacity-50"
-          >
-            {isSendingCode ? "Sending code…" : mode === "verify-email-signup" ? "Resend confirmation email" : "Resend SMS code"}
-          </button>
-        )}
-
-        <form onSubmit={(event) => void handleSubmit(event)} className="mt-3 space-y-2.5">
+        {errorMessage && <p role="alert" className="dashboard-error-message mt-4">{errorMessage}</p>}
+        <form onSubmit={(event) => void handleSubmit(event)} className="mt-2 space-y-2">
           {mode === "register" && (
             <>
               <fieldset className="rounded-lg border border-mist p-2.5">
@@ -680,10 +931,67 @@ export function CustomerAccountPage() {
             Confirm new password
             <input required type="password" minLength={8} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="mt-1.5 w-full rounded-lg border border-mist px-3 py-2.5 text-base" />
           </label>}
-          {(mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-email-signup") && <label className="block text-sm font-medium">
-            {mode === "verify-email-signup" ? "Six-digit email code" : "Six-digit SMS code"}
-            <input required type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-1.5 w-full rounded-lg border border-mist px-3 py-2.5 text-base tracking-[0.3em]" />
-          </label>}
+          {(mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-profile-phone" || mode === "verify-email-signup") && (
+            <fieldset className="min-w-0">
+              <legend className="text-sm font-medium text-ink/75">
+                {mode === "verify-email-signup" ? "Email verification code" : "SMS verification code"}
+              </legend>
+              <div className="mt-2 grid grid-cols-6 gap-2" role="group" aria-label="Six-digit verification code">
+                {Array.from({ length: 6 }, (_, index) => (
+                  <input
+                    key={index}
+                    ref={(element) => { verificationInputRefs.current[index] = element; }}
+                    required
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete={index === 0 ? "one-time-code" : "off"}
+                    autoFocus={index === 0}
+                    pattern="[0-9]"
+                    maxLength={6}
+                    value={verificationCode[index] ?? ""}
+                    aria-label={`Digit ${index + 1} of 6`}
+                    onChange={(event) => {
+                      const digits = event.target.value.replace(/\D/g, "");
+                      if (digits.length > 1) {
+                        const pastedCode = digits.slice(0, 6);
+                        setVerificationCode(pastedCode);
+                        verificationInputRefs.current[Math.min(pastedCode.length, 5)]?.focus();
+                        return;
+                      }
+                      const nextCode = Array.from({ length: 6 }, (_, digitIndex) =>
+                        digitIndex === index ? digits : verificationCode[digitIndex] ?? ""
+                      ).join("");
+                      setVerificationCode(nextCode);
+                      if (digits && index < 5) verificationInputRefs.current[index + 1]?.focus();
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Backspace" && !verificationCode[index] && index > 0) {
+                        verificationInputRefs.current[index - 1]?.focus();
+                      } else if (event.key === "ArrowLeft" && index > 0) {
+                        verificationInputRefs.current[index - 1]?.focus();
+                      } else if (event.key === "ArrowRight" && index < 5) {
+                        verificationInputRefs.current[index + 1]?.focus();
+                      }
+                    }}
+                    className="h-12 min-w-0 rounded-lg border border-ink/15 bg-white text-center text-xl font-medium text-ink outline-none transition focus:border-ink/40 focus:ring-2 focus:ring-ink/10"
+                  />
+                ))}
+              </div>
+              <p className="mt-2 text-xs font-normal text-ink/55">
+                Enter the six-digit code sent to {mode === "verify-email-signup" ? pendingEmail : pendingPhone}.
+              </p>
+            </fieldset>
+          )}
+          {(mode === "verify-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-profile-phone" || mode === "verify-email-signup") && (
+            <button
+              type="button"
+              onClick={() => void handleResendCode()}
+              disabled={isSendingCode}
+              className="w-full py-2 text-sm font-medium text-ink/65 underline decoration-ink/20 underline-offset-4 transition-colors hover:text-ink disabled:opacity-50"
+            >
+              {isSendingCode ? "Sending code…" : mode === "verify-email-signup" ? "Resend confirmation email" : "Resend SMS code"}
+            </button>
+          )}
           {(mode === "login" || mode === "register" || mode === "privacy-consent") && (
             <section aria-labelledby="account-privacy-heading" className="rounded-xl border border-mist bg-porcelain/30 p-2.5">
               <div className="flex items-center gap-2">
@@ -718,7 +1026,7 @@ export function CustomerAccountPage() {
             {isSubmitting ? "Please wait…" : mode === "register" ? signupMethod === "email" ? "Send email verification code" : "Send SMS verification code"
               : mode === "verify-signup" ? "Verify number"
                 : mode === "verify-email-signup" ? "Verify email"
-                : mode === "verify-password" || mode === "verify-phone-link" ? "Verify code"
+                : mode === "verify-password" || mode === "verify-phone-link" || mode === "verify-profile-phone" ? "Verify code"
                   : mode === "set-password" ? "Update password"
                     : mode === "privacy-consent" ? "Accept and continue"
                     : "Sign in"}
@@ -743,46 +1051,37 @@ export function CustomerAccountPage() {
             {mode === "register" ? "Sign in" : "Create account"}
           </button>
         </p>}
-        {(mode === "verify-signup" || mode === "verify-email-signup" || mode === "verify-password" || mode === "verify-phone-link" || mode === "set-password") && (
-          <button
-            type="button"
-            onClick={() => {
-              setMode("login");
-              setPrivacyConsentAccepted(false);
-              setVerificationCode("");
-              setPassword("");
-              setConfirmPassword("");
-              setErrorMessage(null);
-              setMessage(null);
-            }}
-            className="mt-4 w-full text-center text-sm font-semibold text-sage-deep hover:underline"
-          >
-            Cancel and return to sign in
-          </button>
-        )}
           </>
         ) : null}
-        {transactionsLoading && <p className="mt-6 text-sm text-ink/60">Loading your transaction history…</p>}
-        {transactionsError && <p role="alert" className="mt-6 text-sm text-clay">{transactionsError}</p>}
-        {transactions.length > 0 && (
+        {customerUser && mode === "login" && (
           <section aria-labelledby="transaction-history-title" className="mt-8 border-t border-mist pt-6">
-            <h2 id="transaction-history-title" className="font-display text-lg font-semibold">Your past transactions</h2>
-            <ul className="mt-3 space-y-3">
-              {transactions.map((transaction) => (
-                <li key={transaction.id} className="rounded-xl border border-mist p-3 text-sm">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-semibold">{transaction.ticket_number ? `Ticket ${transaction.ticket_number}` : "Salon visit"}</p>
-                      <p className="mt-1 text-xs text-ink/60">{new Date(transaction.created_at).toLocaleString()}</p>
-                      <p className="mt-1 text-xs text-ink/70">
-                        {transaction.pos_transaction_items.map((item) => `${item.service_name} × ${item.quantity}`).join(", ")}
-                      </p>
+            <h2 id="transaction-history-title" className="font-display text-lg font-semibold">Service history</h2>
+            {transactionsLoading ? (
+              <p className="mt-3 text-sm text-ink/60">Loading your service history…</p>
+            ) : transactionsError ? (
+              <p role="alert" className="mt-3 dashboard-error-message">{transactionsError}</p>
+            ) : transactions.length > 0 ? (
+              <ul className="mt-3 space-y-3">
+                {transactions.map((transaction) => (
+                  <li key={transaction.id} className="rounded-xl border border-mist bg-white p-3 text-sm shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold">{transaction.ticket_number ? `Ticket ${transaction.ticket_number}` : "Salon visit"}</p>
+                        <p className="mt-1 text-xs text-ink/60">{new Date(transaction.created_at).toLocaleString()}</p>
+                        <p className="mt-1 break-words text-xs text-ink/70">
+                          {transaction.pos_transaction_items.map((item) => `${item.service_name} × ${item.quantity}`).join(", ")}
+                        </p>
+                      </div>
+                      <p className="shrink-0 font-semibold">₱{Number(transaction.total_amount).toFixed(2)}</p>
                     </div>
-                    <p className="shrink-0 font-semibold">₱{Number(transaction.total_amount).toFixed(2)}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 rounded-xl border border-mist bg-white/80 p-4 text-sm text-ink/60">
+                No service history is available yet.
+              </p>
+            )}
           </section>
         )}
       </section>

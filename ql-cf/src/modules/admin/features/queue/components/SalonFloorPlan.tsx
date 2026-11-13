@@ -8,6 +8,7 @@ import {
 import { fetchStaffAccounts, type StaffAccountRow } from "../../staff/services/adminService";
 import { fetchStations, type StationRow } from "../services/stationService";
 import { formatTicketNumber } from "@/shared/lib/ticketNumber";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
 interface FloorPosition {
   x: number;
@@ -101,6 +102,7 @@ function mapPointerToPosition(event: { clientX: number; clientY: number }, map: 
 }
 
 export function SalonFloorPlan() {
+  const { confirm } = useFeedback();
   const [initialLayout] = useState(readFloorLayout);
   const [stations, setStations] = useState<StationRow[]>([]);
   const [entries, setEntries] = useState<QueueEntryRow[]>([]);
@@ -239,8 +241,13 @@ export function SalonFloorPlan() {
     saveLayout({ ...positions, [key]: nextPosition });
   }
 
-  function resetLayout() {
-    if (!window.confirm("Reset all station positions to the suggested salon layout?")) return;
+  async function resetLayout() {
+    if (!await confirm({
+      title: "Reset salon floor plan",
+      message: "Reset all station positions to the suggested salon layout?",
+      confirmLabel: "Reset layout",
+      destructive: true,
+    })) return;
     setPositions({});
     saveLayout({});
   }

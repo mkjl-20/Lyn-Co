@@ -1,12 +1,14 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiRequest } from "@/shared/lib/apiClient";
-import { useAuth } from "@/shared/context/AuthContext";
+import { useAuth } from "@/shared/context/useAuth";
 import { supabaseClient } from "@/shared/lib/supabaseClient";
 import { PasswordVisibilityButton } from "@/shared/components/PasswordVisibilityButton";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
 export default function StaffChangePasswordPage() {
   const { logout, currentUser } = useAuth();
+  const { confirm } = useFeedback();
   const navigate = useNavigate();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -28,6 +30,13 @@ export default function StaffChangePasswordPage() {
       setError("New passwords do not match.");
       return;
     }
+    if (!await confirm({
+      title: "Confirm password change",
+      message: "Your current password will be replaced. Continue?",
+      confirmLabel: "Change password",
+      cancelLabel: "Keep current password",
+      destructive: true,
+    })) return;
 
     setSaving(true);
     try {

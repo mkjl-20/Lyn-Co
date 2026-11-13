@@ -5,7 +5,9 @@ import { PhilippinePhoneInput } from "@/shared/components/PhilippinePhoneInput";
 import {
   fetchActiveQueue,
   fetchQueueCustomerDetails,
+  fetchQueueReferencePhoto,
   fetchQueueAddOnServices,
+  fetchQueueNoShowRisks,
   fetchQueueCrowdStatus,
   addServiceToQueue,
   replaceQueuedService,
@@ -35,6 +37,7 @@ import { formatTicketNumber } from "@/shared/lib/ticketNumber";
 import { QueueProgress } from "@/shared/components/QueueProgress";
 import { useSalonHours } from "@/shared/hooks/useSalonHours";
 import { formatSalonTime, isAppointmentWithinSalonHours } from "@/shared/lib/salonHours";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
 const PRIORITY_LABELS: Record<string, string> = {
   regular: "Regular",
@@ -62,6 +65,7 @@ function staffCanPerformCategory(staffLane: string, category: string) {
 }
 
 export function QueueOverview() {
+  const { confirm } = useFeedback();
   const { salonHours, salonHoursError } = useSalonHours();
   const [entries, setEntries] = useState<QueueEntryRow[]>([]);
   const [customerDetails, setCustomerDetails] = useState<Record<string, QueueCustomerDetails>>({});
@@ -70,6 +74,7 @@ export function QueueOverview() {
   const [isLoading, setIsLoading] = useState(true);
   const queueRefreshInFlight = useRef(false);
   const queueRefreshPending = useRef(false);
+  const noShowRiskById = useRef(new Map<string, string>());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [queueMessage, setQueueMessage] = useState<string | null>(null);
   const [draggedEntryId, setDraggedEntryId] = useState<string | null>(null);
@@ -81,6 +86,8 @@ export function QueueOverview() {
   const [requestingRebalanceItemId, setRequestingRebalanceItemId] = useState<string | null>(null);
   const [queueSearch, setQueueSearch] = useState("");
   const [queueStatus, setQueueStatus] = useState<"all" | "waiting" | "in_service">("all");
+  const [referencePhoto, setReferencePhoto] = useState<{ entryId: string; url: string } | null>(null);
+  const [loadingReferencePhotoId, setLoadingReferencePhotoId] = useState<string | null>(null);
 
   // Which service item is currently showing its station/staff picker.
   const [startingItemId, setStartingItemId] = useState<string | null>(null);
@@ -136,8 +143,11 @@ export function QueueOverview() {
 
     queueRefreshInFlight.current = true;
     try {
-      const entryRows = await fetchActiveQueue();
-      setEntries(entryRows);
+      const entryRows = await fetchActiveQueue(false);
+      setEntries(entryRows.map((entry) => ({
+        ...entry,
+        noShowRiskReason: noShowRiskById.current.get(entry.id) ?? null,
+      })));
       setIsLoading(false);
 
       const [staffRows, crowd, details] = await Promise.all([
@@ -161,14 +171,45 @@ export function QueueOverview() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadQueue();
     const unsubscribe = subscribeToQueueChanges(loadQueue);
+    const timer = window.setInterval(() => void loadQueue(), 15_000);
     return () => {
       queueRefreshPending.current = false;
+      window.clearInterval(timer);
       unsubscribe();
     };
   }, [loadQueue]);
+
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    const refreshNoShowRisks = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const risks = await fetchQueueNoShowRisks();
+        if (!active) return;
+        const riskByEntry = new Map(risks.map((risk) => [risk.entryId, risk.reason]));
+        noShowRiskById.current = riskByEntry;
+        setEntries((current) => current.map((entry) => ({
+          ...entry,
+          noShowRiskReason: riskByEntry.get(entry.id) ?? null,
+        })));
+      } catch (error) {
+        if (active) setErrorMessage(error instanceof Error ? error.message : "Unable to load queue risk alerts.");
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshNoShowRisks();
+    const timer = window.setInterval(() => void refreshNoShowRisks(), 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     void fetchQueueAddOnServices()
@@ -190,7 +231,9 @@ export function QueueOverview() {
       ]);
       setAvailableStations(stations);
       setServiceSeatOptions(serviceSeats);
-      const availableSeats = serviceSeats.filter((seat) => seat.isEligible && seat.status === "free");
+      const availableSeats = serviceSeats.filter((seat) =>
+        seat.isEligible && (seat.status === "free" || seat.sharedWithVisit)
+      );
       setAvailableServiceSeats(availableSeats);
       const reservedStation = stations.find((station) => station.id === item.stationId);
       if (reservedStation) setSelectedStationId(reservedStation.id);
@@ -261,7 +304,11 @@ export function QueueOverview() {
     if (!replacementServiceId) return;
     const replacement = addOnServices.find((service) => service.id === replacementServiceId);
     if (!replacement) return;
-    if (!window.confirm(`Change ${entry.customerName}'s queued service from ${item.name} to ${replacement.name}? The estimated duration and station assignment will be recalculated.`)) return;
+    if (!await confirm({
+      title: "Change queued service",
+      message: `Change ${entry.customerName}'s queued service from ${item.name} to ${replacement.name}? The estimated duration and station assignment will be recalculated.`,
+      confirmLabel: "Change service",
+    })) return;
     setIsReplacingService(true);
     setErrorMessage(null);
     try {
@@ -325,7 +372,12 @@ export function QueueOverview() {
 
   async function handleEntryStatusChange(entryId: string, status: "cancelled" | "no_show") {
     const action = status === "cancelled" ? "cancel" : "mark as a no-show";
-    if (!window.confirm(`Are you sure you want to ${action} this queue visit?`)) return;
+    if (!await confirm({
+      title: status === "cancelled" ? "Cancel queue visit" : "Mark as no-show",
+      message: `Are you sure you want to ${action} this queue visit?`,
+      confirmLabel: status === "cancelled" ? "Cancel visit" : "Mark no-show",
+      destructive: true,
+    })) return;
     const previous = entries;
     setEntries((current) => current.filter((e) => e.id !== entryId));
     try {
@@ -399,6 +451,19 @@ export function QueueOverview() {
       setErrorMessage(error instanceof Error ? error.message : "Failed to reorder queue.");
     } finally {
       setIsReordering(false);
+    }
+  }
+
+  async function handleViewReferencePhoto(entryId: string) {
+    setLoadingReferencePhotoId(entryId);
+    setErrorMessage(null);
+    try {
+      const url = await fetchQueueReferencePhoto(entryId);
+      setReferencePhoto({ entryId, url });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to open the reference photo.");
+    } finally {
+      setLoadingReferencePhotoId(null);
     }
   }
 
@@ -520,7 +585,7 @@ export function QueueOverview() {
           </label>
           </div>
           <div className="flex justify-end gap-2 border-t border-mist pt-3">
-            <button type="button" disabled={isSavingWalkIn} onClick={() => setIsAddingWalkIn(false)} className="min-h-10 rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70">Cancel</button>
+            <button type="button" disabled={isSavingWalkIn} onClick={() => setIsAddingWalkIn(false)} className="form-cancel-action min-h-10 rounded-lg px-4 text-sm font-semibold">Cancel</button>
             <button type="submit" disabled={isSavingWalkIn || manualServiceIds.length === 0 || !manualPrivacyConsent || (manualArrivalType === "appointment" && !salonHours)} className="dashboard-primary-action min-h-10 rounded-lg px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40">
               {isSavingWalkIn ? "Adding…" : "Add to queue"}
             </button>
@@ -529,12 +594,12 @@ export function QueueOverview() {
         </div>, document.body)
       )}
       {errorMessage && (
-        <p role="alert" className="mt-2 text-sm text-clay">
+        <p role="alert" className="dashboard-error-message mt-2">
           {errorMessage}
         </p>
       )}
       {crowdStatus?.crowded && (
-        <div role="alert" className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-clay/30 bg-clay-light px-4 py-3 text-sm text-clay">
+        <div role="alert" className="dashboard-error-message mt-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="font-semibold">Rush response: {crowdStatus.waiting} customers are waiting (alert threshold {crowdStatus.threshold}).</p>
             <p className="mt-1 text-xs">Review pending services and request a workload rebalance from an available, qualified staff member. Queue order will not change automatically.</p>
@@ -648,6 +713,16 @@ export function QueueOverview() {
                     {entry.additionalNotes && (
                       <p className="mt-1 text-xs italic text-ink/40">"{entry.additionalNotes}"</p>
                     )}
+                    {entry.referencePhotoPath && (
+                      <button
+                        type="button"
+                        onClick={() => void handleViewReferencePhoto(entry.id)}
+                        disabled={loadingReferencePhotoId === entry.id}
+                        className="mt-2 rounded-lg border border-mist px-3 py-1.5 text-xs font-semibold text-sage-deep hover:bg-sage-light disabled:opacity-50"
+                      >
+                        {loadingReferencePhotoId === entry.id ? "Opening photo…" : "View reference photo"}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -743,7 +818,7 @@ export function QueueOverview() {
                           <option value="">Choose replacement service…</option>
                           {addOnServices.filter((service) => service.id !== item.serviceId).map((service) => (
                             <option key={service.id} value={service.id}>
-                              {service.name} · ₱{Number(service.price).toFixed(2)} · {service.duration_minutes} min
+                              {service.name} · ₱{Number(service.price).toFixed(2)} · {service.duration_minutes === null ? "Duration not set" : `${service.duration_minutes} min`}
                             </option>
                           ))}
                         </select>
@@ -824,7 +899,7 @@ export function QueueOverview() {
                               seats={serviceSeatOptions}
                               selectedSeatId={selectedServiceSeatId}
                               onSelect={setSelectedServiceSeatId}
-                              disabled={stationsLoading || availableStations.length === 0 || availableServiceSeats.length === 0}
+                              disabled={stationsLoading || availableServiceSeats.length === 0}
                             />
                           </div>
                         )}
@@ -927,7 +1002,7 @@ export function QueueOverview() {
                 type="button"
                 disabled={isReordering}
                 onClick={() => setPendingReorder(null)}
-                className="min-h-10 rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70 disabled:opacity-50"
+                className="form-cancel-action min-h-10 rounded-lg px-4 text-sm font-semibold"
               >
                 Cancel
               </button>
@@ -941,6 +1016,23 @@ export function QueueOverview() {
             </div>
           </form>
         </div>
+      )}
+      {referencePhoto && createPortal(
+        <div
+          className="fixed inset-0 z-[1000] flex items-center justify-center bg-ink/60 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setReferencePhoto(null);
+          }}
+        >
+          <div role="dialog" aria-modal="true" aria-labelledby="queue-reference-photo-title" className="w-full max-w-2xl rounded-2xl border border-mist bg-white p-4 shadow-2xl sm:p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h3 id="queue-reference-photo-title" className="font-display text-lg font-semibold text-ink">Customer reference photo</h3>
+              <button type="button" aria-label="Close reference photo" onClick={() => setReferencePhoto(null)} className="rounded-lg px-2 text-xl text-ink/50 hover:bg-porcelain">×</button>
+            </div>
+            <img src={referencePhoto.url} alt="Customer-provided service reference" className="mx-auto max-h-[75dvh] max-w-full rounded-lg object-contain" />
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

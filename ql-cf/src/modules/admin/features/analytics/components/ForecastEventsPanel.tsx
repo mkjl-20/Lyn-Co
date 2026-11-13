@@ -150,7 +150,7 @@ export function ForecastEventsPanel() {
             </label>
             {errorMessage && <p role="alert" className="text-xs text-red-700">{errorMessage}</p>}
             <div className="flex justify-end gap-2 border-t border-neutral-200 pt-3">
-              <button type="button" disabled={isSaving} onClick={() => setShowForm(false)} className="min-h-10 rounded-lg border border-neutral-200 px-4 text-sm font-semibold text-neutral-700">Cancel</button>
+              <button type="button" disabled={isSaving} onClick={() => setShowForm(false)} className="form-cancel-action min-h-10 rounded-lg px-4 text-sm font-semibold">Cancel</button>
               <button type="submit" disabled={isSaving} className="dashboard-primary-action min-h-10 rounded-lg px-4 text-sm font-semibold disabled:opacity-50">{isSaving ? "Saving…" : "Save forecast event"}</button>
             </div>
           </form>

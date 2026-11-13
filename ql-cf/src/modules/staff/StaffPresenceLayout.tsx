@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Outlet } from "react-router-dom";
-import { useAuth } from "../../shared/context/AuthContext";
+import { useAuth } from "../../shared/context/useAuth";
 import { supabaseClient } from "../../shared/lib/supabaseClient";
 
 export function StaffPresenceLayout() {

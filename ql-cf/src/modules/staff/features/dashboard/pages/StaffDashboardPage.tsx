@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../../../../../shared/context/AuthContext";
+import { useAuth } from "../../../../../shared/context/useAuth";
 import { StationQueueCounter } from "../../../../../shared/components/StationQueueCounter";
 import { PortalAccountMenu } from "../../../../../shared/components/PortalAccountMenu";
 import { DashboardMetricCard } from "../../../../../shared/components/DashboardMetricCard";
@@ -86,31 +86,31 @@ export default function StaffDashboardPage() {
       </header>
 
       {/* Main */}
-      <main className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      <main className="mx-auto min-h-[calc(100dvh-4rem)] max-w-[1440px] bg-[var(--app-canvas)] px-4 pb-10 pt-3 sm:px-6 lg:px-8 lg:pt-4">
 
         {/* Greeting */}
-        <h1 className="ui-page-title mb-5">{currentUser.fullName}</h1>
+        <h1 className="ui-page-title mb-1">{currentUser.fullName}</h1>
 
         {/* Statistics */}
         {isLoading ? (
-          <DashboardSkeletonGrid count={2} label="Loading staff queue counts" className="mb-5 grid-cols-2" />
+          <DashboardSkeletonGrid count={2} label="Loading staff queue counts" className="mb-1 grid-cols-2 gap-1" />
         ) : (
-          <section className="mb-5 grid grid-cols-2 gap-3" aria-label="Queue counts">
+          <section className="mb-1 grid grid-cols-2 gap-1" aria-label="Queue counts">
             <DashboardMetricCard label="Waiting" value={waitingCount} />
             <DashboardMetricCard label="In service" value={servingCount} />
           </section>
         )}
-        <div className="mb-5">
+        <div className="mb-1">
           <StationQueueCounter />
         </div>
 
         {/* Main Content */}
-        <section className="mt-6 w-full">
+        <section className="mt-1 w-full">
 
           {/* Queue */}
           <div className="rounded-2xl border border-mist bg-white shadow-sm">
 
-            <div className="flex items-center justify-between border-b border-mist px-5 py-4">
+            <div className="flex items-center justify-between border-b border-mist px-4 py-2">
               <div>
                 <h2 className="ui-section-title">
                   {isReceptionist ? "Live Queue" : "Current Queue"}
@@ -125,9 +125,9 @@ export default function StaffDashboardPage() {
 
             {/* Empty state */}
             {errorMessage ? (
-              <div className="flex min-h-40 flex-wrap items-center justify-center gap-3 p-5 text-center" role="alert">
-                <p className="text-sm text-clay">{errorMessage}</p>
-                <button type="button" onClick={() => void loadQueue()} className="min-h-11 rounded-md border border-clay/40 px-4 text-sm font-semibold text-clay hover:bg-clay-light">Retry</button>
+              <div className="dashboard-error-message flex min-h-40 flex-wrap items-center justify-center gap-1 p-4 text-center" role="alert">
+                <p className="text-sm">{errorMessage}</p>
+                <button type="button" onClick={() => void loadQueue()} className="min-h-11 rounded-md border border-red-300 px-4 text-sm font-semibold text-red-700 hover:bg-red-100">Retry</button>
               </div>
             ) : isLoading ? (
               <DashboardSkeletonGrid count={3} variant="queue" label="Loading staff queue" className="gap-0 p-4" />
@@ -138,7 +138,7 @@ export default function StaffDashboardPage() {
             ) : (
               <ul className="divide-y divide-mist">
                 {entries.slice(0, 5).map((entry) => (
-                  <li key={entry.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+                  <li key={entry.id} className="flex flex-wrap items-center justify-between gap-1 px-4 py-2 sm:px-5">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold">{entry.customerName}</p>
                       <p className="text-xs text-ink/60">{entry.status === "waiting" ? `Position ${entry.position ?? "—"}` : "In service"}</p>
@@ -149,7 +149,7 @@ export default function StaffDashboardPage() {
               </ul>
             )}
 
-            <div className={`grid gap-2 border-t border-mist p-4 ${isReceptionist ? "sm:grid-cols-2" : ""}`}>
+            <div className={`grid gap-1 border-t border-mist p-2 ${isReceptionist ? "sm:grid-cols-2" : ""}`}>
               <button
                 type="button"
                 onClick={() => navigate("/lyn-co/staff/queue")}

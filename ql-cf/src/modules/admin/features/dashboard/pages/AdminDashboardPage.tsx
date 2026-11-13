@@ -47,11 +47,11 @@ export function AdminDashboardPage() {
 
   return (
     <main className="admin-dashboard-page h-full min-h-0 overflow-hidden text-[var(--dashboard-text)]" aria-busy={isLoading}>
-      <div className="mx-auto flex h-full max-w-7xl flex-col justify-center gap-4 p-4 sm:gap-5 sm:p-6 lg:p-8">
-        <header className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex h-full w-full flex-col justify-start gap-2 px-3 pb-10 pt-3 sm:gap-3 sm:px-4 sm:pb-10 sm:pt-4 lg:px-5 lg:pt-5">
+        <header className="flex flex-wrap items-end justify-between gap-1">
           <div>
-            <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Overview</h1>
-            <p className="mt-1 text-sm text-[var(--dashboard-muted)]">Live salon operations at a glance.</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Overview</h1>
+            <p className="mt-0.5 text-sm text-[var(--dashboard-muted)]">Live salon operations at a glance.</p>
           </div>
           <p className="text-xs text-[var(--dashboard-muted)]">
             {new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" }).format(new Date())}
@@ -59,25 +59,25 @@ export function AdminDashboardPage() {
         </header>
 
         {errorMessage && (
-          <div role="alert" className="admin-dashboard-error flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-700">
+          <div role="alert" className="admin-dashboard-error flex flex-wrap items-center justify-between gap-1 rounded-2xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-700">
             <span>{errorMessage}</span>
             <button type="button" onClick={() => { setErrorMessage(null); setIsLoading(true); void loadDashboard(); }} className="min-h-11 rounded-lg px-3 font-semibold hover:bg-black/5">Retry</button>
           </div>
         )}
 
-        <section className="grid shrink-0 grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4" aria-label="Today's queue summary">
+        <section className="grid shrink-0 grid-cols-2 gap-1 xl:grid-cols-4" aria-label="Today's queue summary">
           {stats.map(({ label, value }) => (
             <article key={label} className="admin-dashboard-tile min-h-24 p-3 sm:min-h-32 sm:p-5">
               <p className="text-sm text-[var(--dashboard-muted)]">{label}</p>
-              <p className="mt-5 text-4xl font-semibold tracking-tight tabular-nums sm:mt-7 sm:text-5xl" aria-live="polite">
+              <p className="mt-2 text-4xl font-semibold tracking-tight tabular-nums sm:mt-3 sm:text-5xl" aria-live="polite">
                 {isLoading ? <span className="dashboard-skeleton-line h-10 w-16 bg-[var(--dashboard-raised)]" /> : value ?? "—"}
               </p>
-              <div className="mt-4 h-px bg-[var(--dashboard-border)]" />
+              <div className="mt-2 h-px bg-[var(--dashboard-border)]" />
             </article>
           ))}
         </section>
 
-        <nav aria-label="Admin tasks" className="grid shrink-0 auto-rows-fr grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+        <nav aria-label="Admin tasks" className="grid shrink-0 auto-rows-fr grid-cols-2 gap-1 xl:grid-cols-4">
           <DashboardLink
             to="/lyn-co/admin/queue"
             title="Queue"
@@ -142,26 +142,26 @@ function DashboardLink({
       to={to}
       className={`admin-dashboard-tile group flex min-h-28 flex-col justify-between p-3 text-[var(--dashboard-text)] transition-colors hover:bg-[var(--dashboard-raised)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dashboard-text)] sm:min-h-52 sm:p-5 ${className}`}
     >
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-1">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
-          <p className="mt-1 text-xs text-[var(--dashboard-muted)]">{description}</p>
+          <p className="mt-0.5 text-xs text-[var(--dashboard-muted)]">{description}</p>
         </div>
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--dashboard-border)] text-[var(--dashboard-text)]">
           {icon}
         </span>
       </div>
-      <div className="mt-4 flex items-end justify-between gap-4 sm:mt-8">
+      <div className="mt-2 flex items-end justify-between gap-1 sm:mt-3">
         <div>
           <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-[var(--dashboard-muted)]">{primaryLabel}</p>
-          <div className="mt-1 flex items-end justify-between gap-4">
+          <div className="mt-1 flex items-end justify-between gap-1">
             <p className="text-4xl font-semibold tracking-tight tabular-nums" aria-live="polite">
               {isLoading ? <span className="dashboard-skeleton-line mt-2 h-8 w-16 bg-[var(--dashboard-raised)]" /> : primaryValue ?? "—"}
             </p>
             {secondaryLabel && (
               <div className="text-right">
                 <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-[var(--dashboard-muted)]">{secondaryLabel}</p>
-                <p className="mt-1 text-2xl font-semibold tracking-tight tabular-nums" aria-live="polite">
+                <p className="mt-0.5 text-2xl font-semibold tracking-tight tabular-nums" aria-live="polite">
                   {isLoading ? <span className="dashboard-skeleton-line mt-2 h-6 w-10 bg-[var(--dashboard-raised)]" /> : secondaryValue ?? "—"}
                 </p>
               </div>

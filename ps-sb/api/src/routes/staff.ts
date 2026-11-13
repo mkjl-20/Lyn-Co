@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { randomBytes } from "node:crypto";
 import { getSupabase, getSupabaseAdmin } from "../lib/supabase.js";
 import { getAuthenticatedUser } from "./auth.js";
 
@@ -14,12 +13,13 @@ async function writeStaffAudit(
   summary: string,
   metadata: Record<string, unknown> = {},
 ) {
-  const { error } = await supabase.from("audit_logs").insert({
-    actor_id: actorId,
+  const { error } = await supabase.from("admin_audit_logs").insert({
+    actor_user_id: actorId,
     action,
     entity_type: "staff",
     entity_id: staffId,
-    metadata: { ...metadata, summary },
+    summary,
+    metadata,
   });
   if (error) throw error;
 }
@@ -46,6 +46,8 @@ staffRouter.post("/", async (req, res) => {
 
   const cleanUsername = username.trim().toLowerCase();
   const cleanFullName = fullName.trim();
+  const supabase = getSupabase();
+
   try {
     const adminSupabase = getSupabaseAdmin();
     const caller = await getAuthenticatedUser(req);
@@ -54,18 +56,18 @@ staffRouter.post("/", async (req, res) => {
       return;
     }
 
-    const { data: callerProfile, error: callerProfileError } = await adminSupabase
+    const { data: callerProfile, error: callerProfileError } = await supabase
       .from("profiles")
-      .select("account_role, is_active")
+      .select("account_role")
       .eq("id", caller.id)
       .maybeSingle();
     if (callerProfileError) throw callerProfileError;
-    if (!callerProfile?.is_active || callerProfile.account_role !== "admin") {
-      res.status(403).json({ success: false, message: "Only active administrators can create staff accounts." });
+    if (callerProfile?.account_role !== "admin") {
+      res.status(403).json({ success: false, message: "Only administrators can create staff accounts." });
       return;
     }
 
-    const { data: existingProfile, error: usernameError } = await adminSupabase
+    const { data: existingProfile, error: usernameError } = await supabase
       .from("profiles")
       .select("id")
       .eq("username", cleanUsername)
@@ -89,20 +91,9 @@ staffRouter.post("/", async (req, res) => {
       return;
     }
 
-    const { data: profile, error: profileError } = await adminSupabase
+    const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .upsert(
-        {
-          id: authData.user.id,
-          username: cleanUsername,
-          full_name: cleanFullName,
-          account_role: "staff",
-          staff_role: staffRole,
-          is_active: true,
-          must_change_password: true,
-        },
-        { onConflict: "id" },
-      )
+      .insert({ id: authData.user.id, username: cleanUsername, full_name: cleanFullName, account_role: "staff", staff_role: staffRole, is_active: true, must_change_password: true })
       .select("id, username, full_name, account_role, staff_role, is_active")
       .single();
 
@@ -111,103 +102,11 @@ staffRouter.post("/", async (req, res) => {
       throw profileError;
     }
 
-    let warning: string | undefined;
-    try {
-      await writeStaffAudit(adminSupabase, caller.id, "staff.created", profile.id, `Created staff account for ${cleanFullName}.`, { username: cleanUsername, staffRole });
-    } catch (error) {
-      console.error("Staff account created but audit logging failed:", error);
-      warning = "The account was created, but its audit record could not be saved.";
-    }
-    res.status(201).json({
-      success: true,
-      message: "Staff account created successfully.",
-      ...(warning ? { warning } : {}),
-      staff: profile,
-    });
+    await writeStaffAudit(adminSupabase, caller.id, "staff.created", profile.id, `Created staff account for ${cleanFullName}.`, { username: cleanUsername, staffRole });
+    res.status(201).json({ success: true, message: "Staff account created successfully.", staff: profile });
   } catch (error) {
     console.error("Create staff error:", error);
     const message = error instanceof Error ? error.message : "Unexpected server error.";
-    const status = message.includes("SUPABASE_SERVICE_ROLE_KEY") ? 503 : 500;
-    res.status(status).json({ success: false, message });
-  }
-});
-
-staffRouter.post("/:staffId/password-reset", async (req, res) => {
-  try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      res.status(401).json({ success: false, message: "You must be signed in as an administrator." });
-      return;
-    }
-
-    const supabase = getSupabaseAdmin();
-    const { data: callerProfile, error: callerProfileError } = await supabase
-      .from("profiles")
-      .select("account_role, is_active")
-      .eq("id", caller.id)
-      .maybeSingle();
-    if (callerProfileError) throw callerProfileError;
-    if (!callerProfile?.is_active || callerProfile.account_role !== "admin") {
-      res.status(403).json({ success: false, message: "Only active administrators can reset staff passwords." });
-      return;
-    }
-
-    const { data: staff, error: staffError } = await supabase
-      .from("profiles")
-      .select("id, username, full_name, must_change_password")
-      .eq("id", req.params.staffId)
-      .eq("account_role", "staff")
-      .maybeSingle();
-    if (staffError) throw staffError;
-    if (!staff) {
-      res.status(404).json({ success: false, message: "Staff account not found." });
-      return;
-    }
-
-    const temporaryPassword = `${randomBytes(24).toString("base64url")}A1!`;
-    const { error: forceChangeError } = await supabase
-      .from("profiles")
-      .update({ must_change_password: true })
-      .eq("id", staff.id);
-    if (forceChangeError) throw forceChangeError;
-
-    const { error: passwordError } = await supabase.auth.admin.updateUserById(staff.id, {
-      password: temporaryPassword,
-    });
-    if (passwordError) {
-      const { error: rollbackError } = await supabase
-        .from("profiles")
-        .update({ must_change_password: staff.must_change_password })
-        .eq("id", staff.id);
-      if (rollbackError) console.error("Could not roll back password reset flag:", rollbackError.message);
-      res.status(400).json({ success: false, message: passwordError.message });
-      return;
-    }
-
-    let warning: string | undefined;
-    try {
-      await writeStaffAudit(
-        supabase,
-        caller.id,
-        "staff.password_reset",
-        staff.id,
-        `Reset the password for ${staff.full_name}.`,
-        { username: staff.username, mustChangePassword: true },
-      );
-    } catch (error) {
-      console.error("Staff password was reset but audit logging failed:", error);
-      warning = "The password was reset, but its audit record could not be saved.";
-    }
-
-    res.json({
-      success: true,
-      message: "Password reset. The staff member must choose a new password at the next sign-in.",
-      temporaryPassword,
-      ...(warning ? { warning } : {}),
-    });
-  } catch (error) {
-    console.error("Staff password reset failed:", error);
-    const message = error instanceof Error ? error.message : "Unable to reset the staff password.";
     const status = message.includes("SUPABASE_SERVICE_ROLE_KEY") ? 503 : 500;
     res.status(status).json({ success: false, message });
   }

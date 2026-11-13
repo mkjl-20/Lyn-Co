@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import { Clock3, TicketCheck } from "lucide-react";
 import { supabaseClient } from "@/shared/lib/supabaseClient";
+import { useSalonBranding } from "@/shared/context/SalonBrandingContext";
 import { BackButton } from "@/shared/components/BackButton";
 import { QueueProgress } from "@/shared/components/QueueProgress";
 import { formatTicketNumber } from "@/shared/lib/ticketNumber";
+import { buildCustomerTrackingUrl } from "@/shared/lib/queueQr";
 import { cancelQueueEntry, fetchQueueStatus, fetchQueueWaitEstimate } from "../services/joinQueueService";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
 interface QueueStatusData {
   id: string;
@@ -15,6 +18,7 @@ interface QueueStatusData {
   status: "waiting" | "in_service" | "completed" | "cancelled" | "no_show";
   position: number | null;
   estimated_duration: number;
+  predicted_wait_min: number | null;
   additional_notes: string | null;
   created_at: string;
   receipt: {
@@ -23,7 +27,7 @@ interface QueueStatusData {
     totalAmount: number;
     paymentMethod: string;
     paidAt: string;
-    services: { name: string; quantity: number }[];
+    services: { name: string; quantity: number; price: number }[];
   } | null;
   receiptUnavailable?: boolean;
   assigned_service_seats: {
@@ -50,16 +54,37 @@ const STATUS_LABELS: Record<QueueStatusData["status"], string> = {
 };
 
 export function QueueStatusPage() {
-  const { entryId } = useParams<{ entryId: string }>();
+  const { confirm } = useFeedback();
+  const { entryId: routeEntryId } = useParams<{ entryId: string }>();
+  const [searchParams] = useSearchParams();
+  const entryId = routeEntryId ?? searchParams.get("track") ?? undefined;
+  const { queueUrl } = useSalonBranding();
+  const ticketQrTarget = useMemo(() => {
+    if (!entryId) return { url: null, error: null };
+    try {
+      return {
+        url: buildCustomerTrackingUrl(queueUrl || window.location.origin, entryId),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        url: null,
+        error: error instanceof Error
+          ? error.message
+          : "Ticket QR code is unavailable. You can still use the ticket number.",
+      };
+    }
+  }, [entryId, queueUrl]);
 
   const [entry, setEntry] = useState<QueueStatusData | null>(null);
   const [peopleAhead, setPeopleAhead] = useState<number | null>(null);
   const [ewtMinutes, setEwtMinutes] = useState<number | null>(null);
+  const [ewtUnavailable, setEwtUnavailable] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isCancelling, setIsCancelling] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [ticketQrCode, setTicketQrCode] = useState<string | null>(null);
-  const [ticketQrError, setTicketQrError] = useState<string | null>(null);
+  const [ticketQrCode, setTicketQrCode] = useState<{ url: string; dataUrl: string } | null>(null);
+  const [ticketQrError, setTicketQrError] = useState<{ url: string; message: string } | null>(null);
   const statusRequestInFlight = useRef(false);
   const waitRequestInFlight = useRef(false);
 
@@ -76,8 +101,12 @@ export function QueueStatusPage() {
 
     try {
       const data = await fetchQueueStatus(entryId);
-      setEntry(data.entry as QueueStatusData);
+      const queueEntry = data.entry as QueueStatusData;
+      setEntry(queueEntry);
       setPeopleAhead(data.peopleAhead);
+      if (queueEntry.predicted_wait_min !== null) {
+        setEwtMinutes((current) => current ?? queueEntry.predicted_wait_min);
+      }
     } catch (error) {
       console.error("Queue status error:", error);
       setErrorMessage(
@@ -96,9 +125,15 @@ export function QueueStatusPage() {
     waitRequestInFlight.current = true;
     try {
       const { wait } = await fetchQueueWaitEstimate(entryId);
-      setEwtMinutes(wait.ewtMinutes);
+      if (wait.ewtMinutes === null) {
+        setEwtUnavailable(true);
+      } else {
+        setEwtMinutes(wait.ewtMinutes);
+        setEwtUnavailable(false);
+      }
     } catch (error) {
       console.error("Queue wait estimate error:", error);
+      setEwtUnavailable(true);
     } finally {
       waitRequestInFlight.current = false;
     }
@@ -153,30 +188,39 @@ export function QueueStatusPage() {
 
   useEffect(() => {
     let active = true;
-    if (!entryId) return;
+    const trackingUrl = ticketQrTarget.url;
+    if (!trackingUrl) return;
 
-    QRCode.toDataURL(window.location.href, {
+    QRCode.toDataURL(trackingUrl, {
       width: 192,
       margin: 1,
       errorCorrectionLevel: "M",
     }).then((dataUrl) => {
       if (active) {
-        setTicketQrCode(dataUrl);
+        setTicketQrCode({ url: trackingUrl, dataUrl });
         setTicketQrError(null);
       }
     }).catch((error: unknown) => {
       console.error("Queue ticket QR generation failed:", error);
-      if (active) setTicketQrError("Ticket QR code is unavailable. You can still use the ticket number.");
+      if (active) setTicketQrError({
+        url: trackingUrl,
+        message: "Ticket QR code is unavailable. You can still use the ticket number.",
+      });
     });
 
     return () => {
       active = false;
     };
-  }, [entryId]);
+  }, [ticketQrTarget.url]);
 
   async function handleCancel() {
     if (!entryId) return;
-    if (!window.confirm("Cancel your place in the queue? This cannot be undone.")) return;
+    if (!await confirm({
+      title: "Cancel queue visit",
+      message: "Cancel your place in the queue? This cannot be undone.",
+      confirmLabel: "Cancel queue visit",
+      destructive: true,
+    })) return;
     setIsCancelling(true);
     try {
       await cancelQueueEntry(entryId);
@@ -217,7 +261,7 @@ export function QueueStatusPage() {
             Queue Status Unavailable
           </h1>
 
-          <p className="mt-2 text-sm text-clay">
+          <p role="alert" className="dashboard-error-message mt-2">
             {errorMessage ?? "Something went wrong."}
           </p>
 
@@ -277,10 +321,10 @@ export function QueueStatusPage() {
                   {formatTicketNumber(entry.ticket_number)}
                 </p>
               </div>
-            {ticketQrCode ? (
+            {ticketQrCode?.url === ticketQrTarget.url ? (
               <div className="flex shrink-0 flex-col items-center">
                 <img
-                  src={ticketQrCode}
+                  src={ticketQrCode.dataUrl}
                   alt={`QR code for queue ticket ${entry.ticket_number}`}
                   className="h-20 w-20 rounded-lg border border-mist bg-white p-1.5"
                 />
@@ -288,8 +332,10 @@ export function QueueStatusPage() {
                   Scan for updates
                 </p>
               </div>
-            ) : ticketQrError ? (
-              <p role="status" className="max-w-40 text-right text-xs text-clay">{ticketQrError}</p>
+            ) : ticketQrTarget.error || ticketQrError?.url === ticketQrTarget.url ? (
+              <p role="status" className="max-w-40 text-right text-xs text-clay">
+                {ticketQrTarget.error ?? ticketQrError?.message}
+              </p>
             ) : null}
             </div>
 
@@ -308,40 +354,50 @@ export function QueueStatusPage() {
               </div>
             </div>
 
-            <div className="mt-4">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-ink/50">Service summary</h2>
-              <div className="mt-2">
-                <QueueProgress
-                  status={entry.status}
-                  customerStage={entry.status === "in_service" ? "in_service" : "waiting"}
-                  services={entry.assigned_service_seats.map((service) => ({
-                    id: service.id,
-                    name: service.serviceName,
-                    status: service.status,
-                    customerStage: service.customerStage,
-                  }))}
-                />
+            {entry.status === "waiting" && (
+              <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-sage/20 bg-white px-3 py-2.5">
+                <span className="text-xs font-medium text-ink/60">Estimated wait</span>
+                <span className="text-base font-bold text-sage-deep">
+                  {ewtMinutes === null
+                    ? ewtUnavailable ? "Unavailable" : "Updating…"
+                    : `About ${Math.round(ewtMinutes / 5) * 5} min`}
+                </span>
               </div>
-              <ul className="mt-2 space-y-2 rounded-lg border border-mist p-2">
+            )}
+
+            <div className="mt-3">
+              <QueueProgress
+                status={entry.status}
+                customerStage={entry.assigned_service_seats.some((service) => service.status === "in_service") ? "in_service" : "waiting"}
+                services={entry.assigned_service_seats.map((service) => ({
+                  id: service.id,
+                  name: service.serviceName,
+                  status: service.status,
+                  customerStage: service.customerStage,
+                }))}
+              />
+            </div>
+
+            <details className="mt-3 rounded-lg border border-mist px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-ink/70">
+                Services and assignments ({entry.assigned_service_seats.length})
+              </summary>
+              <ul className="mt-2 divide-y divide-mist">
                 {entry.assigned_service_seats.map((service) => (
-                  <li key={service.id} className="rounded-md bg-white p-2">
-                    <div className="flex items-center justify-between gap-3 text-sm">
-                      <span className="min-w-0 break-words font-medium text-ink">{service.serviceName}</span>
-                      <span className="shrink-0 text-xs font-medium capitalize text-sage-deep">
-                        {service.status === "pending" && entry.status === "in_service"
-                          ? "Up next"
-                          : service.customerStage.replace("_", " ")}
-                      </span>
+                  <li key={service.id} className="py-2 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="min-w-0 font-medium text-ink">{service.serviceName}</span>
+                      <span className="shrink-0 capitalize text-sage-deep">{service.customerStage.replace("_", " ")}</span>
                     </div>
                     {(service.staffStationLabel || service.serviceSeatLabel || service.assignedStaffName) && (
-                      <p className="mt-1 text-xs text-ink/55">
-                        {[service.staffStationLabel, service.serviceSeatLabel, service.assignedStaffName].filter(Boolean).join(" · ")}
+                      <p className="mt-1 text-ink/55">
+                        {[service.staffStationLabel, service.assignedStaffName, service.serviceSeatLabel].filter(Boolean).join(" · ")}
                       </p>
                     )}
                   </li>
                 ))}
               </ul>
-            </div>
+            </details>
             {entry.receipt && (
               <Link
                 to={`/receipt/${entry.id}`}
@@ -363,92 +419,36 @@ export function QueueStatusPage() {
         </section>
 
         <div className="px-4 pb-4 sm:px-6 sm:pb-6">
-          <div className="mt-2 rounded-xl bg-sage/10 p-4 text-center sm:p-5" aria-live="polite" aria-atomic="true">
+          <div className="mt-2 rounded-xl bg-sage/10 p-3 text-center sm:p-4" aria-live="polite" aria-atomic="true">
             <p className="flex items-center justify-center gap-2 text-sm font-semibold text-sage-deep">
               <Clock3 size={15} aria-hidden="true" />
-              Live queue &amp; service updates
+              {entry.status === "waiting" && peopleAhead !== null
+                ? peopleAhead === 0 ? "You're next" : `${peopleAhead} ${peopleAhead === 1 ? "customer" : "customers"} ahead`
+                : "Live queue updates"}
             </p>
 
             {entry.status === "waiting" && (
               <>
-              {customerStation && (
-                <div className="mt-3 rounded-lg border border-sage/20 bg-white/80 px-4 py-3 text-left">
-                  <p className="text-xs font-medium text-ink/55">Your station</p>
-                  <p className="mt-1 text-lg font-bold text-sage-deep">
-                    {customerStation.staffStationLabel}
-                  </p>
-                  <p className="mt-1 text-xs text-ink/60">
-                    {customerStation.serviceName} · {customerStation.customerStage.replace("_", " ")}
-                  </p>
-                  {customerStation.assignedStaffName && (
-                    <p className="mt-1 text-xs font-medium text-ink/70">Your stylist: {customerStation.assignedStaffName}</p>
-                  )}
-                </div>
-              )}
-              <p className="mt-3 rounded-lg bg-white/80 px-4 py-3 text-sm font-medium text-ink/70">
-                Please wait until staff call your ticket.
-              </p>
-              {serviceSeatLabel ? (
-                <div className="mt-3 rounded-lg border border-sage/20 bg-white/80 px-4 py-3 text-left">
-                  <p className="text-xs font-medium text-ink/55">Your service seat</p>
-                  <p className="mt-1 text-lg font-bold text-sage-deep">{serviceSeatLabel}</p>
-                </div>
-              ) : (
-                <p className="mt-3 rounded-lg bg-gold-light px-4 py-3 text-sm font-medium text-ink/70">
-                  No service seat is available yet. Please ask reception for assistance.
+              <p className="mt-2 text-xs text-ink/60">Please wait until staff call your ticket.</p>
+              {(serviceSeatLabel || customerStation) && (
+                <p className="mt-2 text-xs text-ink/60">
+                  {[customerStation?.staffStationLabel, customerStation?.assignedStaffName, serviceSeatLabel].filter(Boolean).join(" · ")}
                 </p>
-              )}
-              <p className="mt-3 text-4xl font-bold text-ink">
-                {peopleAhead !== null ? peopleAhead : "—"}
-              </p>
-
-              <p className="text-xs text-ink/50">
-                {peopleAhead === 0 ? "You're next!" : "customers ahead of you"}
-              </p>
-
-              {ewtMinutes !== null && (
-                <div className="mt-4">
-                  <p className="text-sm font-medium text-ink/60">
-                    Estimated Wait
-                  </p>
-
-                  <p className="mt-1 text-2xl font-semibold text-ink">
-                    ~{ewtMinutes} min
-                  </p>
-
-                </div>
               )}
               </>
             )}
 
             {entry.status === "in_service" && (
               <>
-              {customerStation && (
-                <div className="mt-3 rounded-lg border border-sage/20 bg-white/80 px-4 py-3 text-left">
-                  <p className="text-xs font-medium text-ink/55">Your station</p>
-                  <p className="mt-1 text-lg font-bold text-sage-deep">
-                    {customerStation.staffStationLabel}
-                  </p>
-                  <p className="mt-1 text-xs text-ink/60">
-                    {customerStation.serviceName} · {customerStation.customerStage.replace("_", " ")}
-                  </p>
-                  {customerStation.assignedStaffName && (
-                    <p className="mt-1 text-xs font-medium text-ink/70">Your stylist: {customerStation.assignedStaffName}</p>
-                  )}
-                  {customerStation.staffUpdate && (
-                    <p className="mt-2 rounded-md bg-sage/10 px-3 py-2 text-sm text-ink/75" aria-live="polite">
-                      {customerStation.staffUpdate}
-                    </p>
-                  )}
-                </div>
+              {(customerStation || serviceSeatLabel) && (
+                <p className="mt-2 text-xs text-ink/60">
+                  {[customerStation?.staffStationLabel, customerStation?.assignedStaffName, serviceSeatLabel].filter(Boolean).join(" · ")}
+                </p>
               )}
-              {serviceSeatLabel ? (
-                <div className="mt-3 rounded-lg bg-white/80 px-4 py-3 text-left">
-                  <p className="text-xs font-medium text-ink/55">Please take your service seat</p>
-                  <p className="mt-1 text-lg font-bold text-sage-deep">{serviceSeatLabel}</p>
-                </div>
-              ) : (
-                <p className="mt-3 text-sm text-ink/60">Please follow staff instructions to your service seat.</p>
+              {customerStation?.staffUpdate && (
+                <p className="mt-2 rounded-md bg-white/80 px-3 py-2 text-xs text-ink/75" aria-live="polite">
+                  {customerStation.staffUpdate}
+                </p>
               )}
               </>
             )}

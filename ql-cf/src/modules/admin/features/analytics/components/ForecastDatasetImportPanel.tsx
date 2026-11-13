@@ -26,6 +26,7 @@ interface TrainingResult {
 
 const IMPORT_BATCH_SIZE = 200;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MIN_TRAINING_RECORDS = 35;
 
 export function ForecastDatasetImportPanel() {
   const [rows, setRows] = useState<ForecastImportRow[]>([]);
@@ -72,7 +73,7 @@ export function ForecastDatasetImportPanel() {
       const parsed = parseForecastDatasetCsv(await file.text());
       setRows(parsed);
       setFileName(file.name);
-      setMessage(`Ready to import ${parsed.length.toLocaleString()} validated rows from ${file.name}.`);
+      setMessage(`${parsed.length.toLocaleString()} rows ready to import.`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Unable to read this CSV file.");
     }
@@ -105,7 +106,7 @@ export function ForecastDatasetImportPanel() {
         inserted += result.insertedCount;
         setImportProgress(Math.min(100, Math.round(((offset + batch.length) / rows.length) * 100)));
       }
-      setMessage(`Import complete: ${inserted.toLocaleString()} new rows; existing duplicate rows were skipped.`);
+      setMessage(`${inserted.toLocaleString()} rows imported. Duplicates skipped.`);
       setRows([]);
       setFileName("");
       await loadStatus();
@@ -128,7 +129,7 @@ export function ForecastDatasetImportPanel() {
         body: JSON.stringify({}),
       });
       setTrainingResult(result.result);
-      setMessage("Model training and chronological holdout evaluation completed.");
+      setMessage("Model trained.");
       await loadStatus();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Unable to train the model.");
@@ -138,26 +139,30 @@ export function ForecastDatasetImportPanel() {
   }
 
   const busy = isImporting || isTraining;
+  const recordCount = status?.recordCount ?? 0;
+  const recordsNeeded = Math.max(0, MIN_TRAINING_RECORDS - recordCount);
 
   return (
     <section className="h-full overflow-hidden rounded-xl border border-neutral-200 bg-white p-3 shadow-sm" aria-labelledby="forecast-dataset-title">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 id="forecast-dataset-title" className="text-base font-semibold text-[var(--color-ink)]">Forecast training data</h2>
-          <p className="mt-1 max-w-3xl text-xs text-[var(--app-ink-muted)]">
-            Import historical service records and train a multiple linear regression model for estimated wait time.
-            Training uses an 80/20 chronological holdout; it does not change current live queue estimates.
-          </p>
+          <h2 id="forecast-dataset-title" className="text-base font-semibold text-[var(--color-ink)]">Training data</h2>
+          <p className="mt-1 text-xs text-[var(--app-ink-muted)]">Import past services to train wait-time predictions.</p>
         </div>
         <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-ink-muted)]">History records</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--app-ink-muted)]">Records</p>
           <p className="mt-1 text-xl font-bold text-[var(--color-ink)]">{status?.recordCount.toLocaleString() ?? "—"}</p>
+          <p className="mt-1 text-xs text-[var(--app-ink-muted)]">
+            {status
+              ? recordsNeeded > 0 ? `${recordsNeeded} more to train` : "Ready to train"
+              : errorMessage ? "Unavailable" : "Loading…"}
+          </p>
         </div>
       </div>
 
       <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
         <label className="block text-xs font-medium text-[var(--color-ink)]">
-          Historical CSV file
+          CSV file
           <input
             type="file"
             accept=".csv,text/csv"
@@ -165,17 +170,17 @@ export function ForecastDatasetImportPanel() {
             disabled={busy}
             className="mt-1 block min-h-9 w-full rounded-lg border border-neutral-200 bg-white p-1.5 text-xs"
           />
-          <span className="mt-1 block text-xs text-[var(--app-ink-muted)]">CSV must use the training columns from the provided template. Maximum 5 MB per file.</span>
+          <span className="mt-1 block text-xs text-[var(--app-ink-muted)]">Use the template · 5 MB max</span>
         </label>
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={downloadTemplate} disabled={busy} className="min-h-9 rounded-lg border border-neutral-200 px-3 text-xs font-semibold text-[var(--color-ink)] disabled:opacity-50">
-            Download CSV template
+            CSV template
           </button>
           <button type="button" onClick={() => void importRows()} disabled={busy || rows.length === 0} className="min-h-9 rounded-lg bg-black px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
-            {isImporting ? `Importing ${importProgress}%` : `Import ${rows.length ? rows.length.toLocaleString() : ""} rows`}
+            {isImporting ? `Importing ${importProgress}%` : rows.length ? `Import ${rows.length.toLocaleString()} rows` : "Import data"}
           </button>
-          <button type="button" onClick={() => void trainModel()} disabled={busy || (status?.recordCount ?? 0) < 35} className="min-h-9 rounded-lg border border-neutral-200 px-3 text-xs font-semibold text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50">
-            {isTraining ? "Training…" : "Train MLR model"}
+          <button type="button" onClick={() => void trainModel()} disabled={busy || recordCount < MIN_TRAINING_RECORDS} className="min-h-9 rounded-lg border border-neutral-200 px-3 text-xs font-semibold text-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50">
+            {isTraining ? "Training…" : "Train model"}
           </button>
         </div>
       </div>

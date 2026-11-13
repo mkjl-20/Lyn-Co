@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Coffee, Play } from "lucide-react";
-import { useAuth } from "@/shared/context/AuthContext";
+import { createPortal } from "react-dom";
+import { Bell, Coffee, Play } from "lucide-react";
+import { useAuth } from "@/shared/context/useAuth";
 import { BackButton } from "@/shared/components/BackButton";
 import { PhilippinePhoneInput } from "@/shared/components/PhilippinePhoneInput";
 import { StatusBadge } from "@/shared/components/StatusBadge";
@@ -11,13 +12,13 @@ import {
   callStaffServiceItem,
   fetchAvailableStations,
   fetchServiceSeatOptions,
-  updateServiceProgress,
   type QueueEntryRow,
   type QueueEntryServiceItem,
   type AvailableStation,
   type ServiceSeatOption,
   startStaffServiceItem,
   fetchStaffQueue,
+  fetchQueueReferencePhoto,
   fetchQueueNoShowRisks,
   subscribeToQueueChanges,
   fetchQueueAddOnServices,
@@ -46,6 +47,7 @@ export default function StaffQueuePage() {
   const [queueFilter, setQueueFilter] = useState<"all" | "waiting" | "in_service">("all");
   const [crowdStatus, setCrowdStatus] = useState<QueueCrowdStatus | null>(null);
   const [staffAvailability, setStaffAvailability] = useState<StaffAvailability>("available");
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [rebalanceRequests, setRebalanceRequests] = useState<StaffRebalanceRequest[]>([]);
   const [respondingToRebalanceId, setRespondingToRebalanceId] = useState<string | null>(null);
   const [isUpdatingAvailability, setIsUpdatingAvailability] = useState(false);
@@ -61,13 +63,13 @@ export default function StaffQueuePage() {
   const [stationsLoading, setStationsLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [calling, setCalling] = useState(false);
-  const [progressDrafts, setProgressDrafts] = useState<Record<string, string>>({});
-  const [updatingProgressItemId, setUpdatingProgressItemId] = useState<string | null>(null);
   const [completingItemId, setCompletingItemId] = useState<string | null>(null);
   const [addOnServices, setAddOnServices] = useState<QueueAddOnService[]>([]);
   const [selectedAddOnByEntry, setSelectedAddOnByEntry] = useState<Record<string, string>>({});
   const [addingServiceEntryId, setAddingServiceEntryId] = useState<string | null>(null);
   const [pendingCancellation, setPendingCancellation] = useState<{ entryId: string; customerName: string; ticketNumber: number } | null>(null);
+  const [referencePhoto, setReferencePhoto] = useState<string | null>(null);
+  const [loadingReferencePhotoId, setLoadingReferencePhotoId] = useState<string | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
   const [isCancellingEntry, setIsCancellingEntry] = useState(false);
   const [isAddingWalkIn, setIsAddingWalkIn] = useState(false);
@@ -238,6 +240,18 @@ export default function StaffQueuePage() {
     }
   }
 
+  async function handleViewReferencePhoto(entryId: string) {
+    setLoadingReferencePhotoId(entryId);
+    setErrorMessage(null);
+    try {
+      setReferencePhoto(await fetchQueueReferencePhoto(entryId));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Unable to open the reference photo.");
+    } finally {
+      setLoadingReferencePhotoId(null);
+    }
+  }
+
   async function handleAddWalkIn(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorMessage(null);
@@ -278,19 +292,6 @@ export default function StaffQueuePage() {
     }
   }
 
-  async function handleProgressUpdate(itemId: string) {
-    setUpdatingProgressItemId(itemId);
-    setErrorMessage(null);
-    try {
-      await updateServiceProgress(itemId, progressDrafts[itemId] ?? "");
-      await loadQueue();
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to update customer progress.");
-    } finally {
-      setUpdatingProgressItemId(null);
-    }
-  }
-
   async function handleOpenCall(item: QueueEntryServiceItem) {
     if (staffAvailability === "on_break") {
       setErrorMessage("End your break before calling a customer.");
@@ -308,7 +309,9 @@ export default function StaffQueuePage() {
     try {
       const serviceSeats = await fetchServiceSeatOptions(item.category, item.id);
       setServiceSeatOptions(serviceSeats);
-      const availableSeats = serviceSeats.filter((seat) => seat.isEligible && seat.status === "free");
+      const availableSeats = serviceSeats.filter((seat) =>
+        seat.isEligible && (seat.status === "free" || seat.sharedWithVisit)
+      );
       setAvailableServiceSeats(availableSeats);
       const assignedSeat = availableSeats.find((seat) => seat.id === item.customerServiceSeatId);
       const serviceSeat = assignedSeat ?? (availableSeats.length === 1 ? availableSeats[0] : null);
@@ -374,7 +377,9 @@ export default function StaffQueuePage() {
       ]);
       setAvailableStations(stations);
       setServiceSeatOptions(serviceSeats);
-      const availableSeats = serviceSeats.filter((seat) => seat.isEligible && seat.status === "free");
+      const availableSeats = serviceSeats.filter((seat) =>
+        seat.isEligible && (seat.status === "free" || seat.sharedWithVisit)
+      );
       setAvailableServiceSeats(availableSeats);
       const reservedStation = stations.find((station) => station.id === item.stationId);
       const station = reservedStation ?? (stations.length === 1 ? stations[0] : null);
@@ -445,6 +450,7 @@ export default function StaffQueuePage() {
   const assignedServices = entries.reduce((count, entry) =>
     count + entry.services.filter((item) => item.canStaffHandle && item.status === "pending").length, 0
   );
+  const notificationCount = rebalanceRequests.length + entries.filter((entry) => entry.noShowRiskReason).length;
 
   return (
     <div className="pastel-pink-gradient-page min-h-screen text-ink">
@@ -455,6 +461,56 @@ export default function StaffQueuePage() {
             <h1 className="ui-section-title">{isReceptionist ? "Queue Desk" : "My Queue"}</h1>
           </div>
           <div className="flex items-center gap-2">
+            <div className="relative">
+              <button
+                type="button"
+                aria-label={notificationCount ? `Notifications, ${notificationCount} unread` : "Notifications"}
+                aria-haspopup="dialog"
+                aria-expanded={isNotificationsOpen}
+                onClick={() => setIsNotificationsOpen((open) => !open)}
+                className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg border border-mist bg-white text-ink/70 transition hover:bg-porcelain focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage-deep"
+              >
+                <Bell size={18} aria-hidden="true" />
+                {notificationCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-clay px-1 text-[10px] font-bold text-white" aria-hidden="true">
+                    {notificationCount > 9 ? "9+" : notificationCount}
+                  </span>
+                )}
+              </button>
+              {isNotificationsOpen && (
+                <section
+                  role="dialog"
+                  aria-label="Staff notifications"
+                  className="absolute right-0 top-12 z-50 max-h-[min(70dvh,28rem)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-mist bg-white p-4 text-ink shadow-xl"
+                >
+                  <h2 className="text-sm font-semibold">Notifications</h2>
+                  {notificationCount === 0 ? (
+                    <p className="mt-2 text-xs leading-5 text-ink/60">You’re all caught up. Queue alerts and workload requests will appear here.</p>
+                  ) : (
+                    <ul className="mt-3 space-y-2">
+                      {entries.filter((entry) => entry.noShowRiskReason).map((entry) => (
+                        <li key={`risk-${entry.id}`} className="rounded-lg border border-clay/20 bg-red-50 p-3">
+                          <p className="text-xs font-semibold text-ink">
+                            No-show risk · Ticket {formatTicketNumber(entry.ticketNumber)}
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-ink/70">
+                            {entry.customerName}: {entry.noShowRiskReason}
+                          </p>
+                        </li>
+                      ))}
+                      {rebalanceRequests.map((request) => (
+                        <li key={`rebalance-${request.id}`} className="rounded-lg border border-sage/25 bg-sage-light/40 p-3">
+                          <p className="text-xs font-semibold text-ink">Workload request · Ticket {formatTicketNumber(request.ticketNumber)}</p>
+                          <p className="mt-1 text-xs leading-5 text-ink/70">
+                            {request.requestedByName} requested that you take {request.serviceName} for {request.customerName}.
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
+            </div>
             <button
               type="button"
               onClick={() => void handleToggleAvailability()}
@@ -576,12 +632,12 @@ export default function StaffQueuePage() {
           </form>
         )}
         {errorMessage && (
-          <p role="alert" className="mb-4 text-sm text-clay">
+          <p role="alert" className="dashboard-error-message mb-4">
             {errorMessage}
           </p>
         )}
         {crowdStatus?.crowded && (
-          <p role="alert" className="mb-4 rounded-lg border border-clay/30 bg-clay-light px-4 py-3 text-sm font-semibold text-clay">
+          <p role="alert" className="dashboard-error-message mb-4 font-semibold">
             Queue crowding alert: {crowdStatus.waiting} customers are waiting (threshold {crowdStatus.threshold}).
           </p>
         )}
@@ -653,6 +709,21 @@ export default function StaffQueuePage() {
                     {entry.noShowRiskReason && (
                       <p className="mt-1 text-sm font-medium text-clay">No-show risk: {entry.noShowRiskReason}</p>
                     )}
+                    {isFirstVisibleItem && (entry.additionalNotes || entry.referencePhotoPath) && (
+                      <div className="mt-2 rounded-lg bg-porcelain/70 p-3">
+                        {entry.additionalNotes && <p className="text-sm italic text-ink/70">Note: {entry.additionalNotes}</p>}
+                        {entry.referencePhotoPath && (
+                          <button
+                            type="button"
+                            onClick={() => void handleViewReferencePhoto(entry.id)}
+                            disabled={loadingReferencePhotoId === entry.id}
+                            className="mt-2 rounded-lg border border-mist px-3 py-1.5 text-xs font-semibold text-sage-deep hover:bg-sage-light disabled:opacity-50"
+                          >
+                            {loadingReferencePhotoId === entry.id ? "Opening photo…" : "View reference photo"}
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <p className="mt-1 text-sm font-semibold text-sage-deep">
                       Station: {item.stationLabel ?? "Not assigned"} · Service seat: {item.customerServiceSeatLabel ?? "Not assigned"}
                     </p>
@@ -683,30 +754,6 @@ export default function StaffQueuePage() {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     {item.status === "in_service" && item.staffUpdate && (
                       <p className="min-w-0 flex-1 text-sm text-ink/65">{item.staffUpdate}</p>
-                    )}
-                    {item.status === "in_service" && item.assignedStaffId === currentUser?.id && (
-                      <div className="flex w-full flex-col gap-2 sm:flex-row">
-                        <input
-                          type="text"
-                          maxLength={160}
-                          value={progressDrafts[item.id] ?? item.staffUpdate ?? ""}
-                          onChange={(event) => setProgressDrafts((current) => ({
-                            ...current,
-                            [item.id]: event.target.value,
-                          }))}
-                          placeholder="Progress update"
-                          aria-label={`Progress update for ${item.name}`}
-                          className="min-h-10 min-w-0 flex-1 rounded-md border border-mist bg-white px-3 py-2 text-sm outline-none focus:border-sage"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void handleProgressUpdate(item.id)}
-                          disabled={updatingProgressItemId === item.id}
-                          className="min-h-10 rounded-md border border-sage/40 px-4 py-2 text-sm font-semibold text-sage-deep disabled:opacity-50"
-                        >
-                          {updatingProgressItemId === item.id ? "Saving..." : "Update"}
-                        </button>
-                      </div>
                     )}
                     {item.status === "pending" && item.canStaffHandle && (
                       <button
@@ -787,7 +834,7 @@ export default function StaffQueuePage() {
       </main>
       {startingItemId && (
         <div className="fixed inset-0 z-[100] flex items-end justify-center bg-ink/35 p-0 backdrop-blur-sm sm:items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !starting) { setStartingItemId(null); setSelectedStationId(""); } }}>
-          <section role="dialog" aria-modal="true" aria-labelledby="station-dialog-title" className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl border border-[var(--app-border)] bg-white p-5 shadow-2xl sm:max-w-md sm:rounded-2xl sm:p-6">
+          <section role="dialog" aria-modal="true" aria-labelledby="station-dialog-title" className="max-h-[min(92dvh,900px)] w-full min-w-0 overflow-y-auto rounded-t-2xl border border-[var(--app-border)] bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-2xl sm:p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-sage-deep">Start service</p>
@@ -798,7 +845,7 @@ export default function StaffQueuePage() {
             </div>
             {stationsLoading ? <p className="mt-5 rounded-lg bg-sage-light/60 p-4 text-sm text-ink/65">Finding available stations and service chairs…</p> : (
               <div className="mt-5 space-y-3">
-                {availableStations.length === 0 ? <p role="alert" className="rounded-lg border border-clay/20 bg-clay-light p-4 text-sm text-clay">No free station matches this service right now.</p> : (
+                {availableStations.length === 0 ? <p role="alert" className="dashboard-error-message">No free station matches this service right now.</p> : (
                   <label className="block text-xs font-semibold text-ink/65">Available station
                     <select value={selectedStationId} onChange={(event) => setSelectedStationId(event.target.value)} disabled={starting} className="dashboard-filter-control mt-1 w-full" aria-label="Select station">
                       <option value="">Select station</option>
@@ -807,7 +854,7 @@ export default function StaffQueuePage() {
                   </label>
                 )}
                 {serviceSeatOptions.length === 0 ? (
-                  <p role="alert" className="rounded-lg border border-clay/20 bg-clay-light p-4 text-sm text-clay">No service chairs are configured on the salon map.</p>
+                  <p role="alert" className="dashboard-error-message">No service chairs are configured on the salon map.</p>
                 ) : (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold text-ink/65">Customer's called chair</p>
@@ -818,14 +865,14 @@ export default function StaffQueuePage() {
                       disabled={starting || visibleServiceItems.find(({ item }) => item.id === startingItemId)?.item.customerStage === "called"}
                     />
                     {availableServiceSeats.length === 0 && (
-                      <p role="alert" className="rounded-lg border border-clay/20 bg-clay-light p-3 text-xs text-clay">No free service chair matches this service right now.</p>
+                      <p role="alert" className="dashboard-error-message text-xs">No free service chair matches this service right now.</p>
                     )}
                   </div>
                 )}
               </div>
             )}
             <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button type="button" disabled={starting} onClick={() => { setStartingItemId(null); setSelectedStationId(""); }} className="rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70 disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={starting} onClick={() => { setStartingItemId(null); setSelectedStationId(""); }} className="form-cancel-action rounded-lg px-4 text-sm font-semibold">Cancel</button>
               <button type="button" onClick={() => void handleAccept(startingItemId)} disabled={stationsLoading || starting || !selectedStationId || !selectedServiceSeatId} className="dashboard-primary-action rounded-lg px-4 text-sm font-semibold disabled:opacity-50">{starting ? "Starting..." : "Confirm and start"}</button>
             </div>
           </section>
@@ -853,7 +900,7 @@ export default function StaffQueuePage() {
             {stationsLoading ? (
               <p className="mt-5 rounded-lg bg-sage-light/60 p-4 text-sm text-ink/65">Finding available service chairs…</p>
             ) : serviceSeatOptions.length === 0 ? (
-              <p role="alert" className="mt-5 rounded-lg border border-clay/20 bg-clay-light p-4 text-sm text-clay">No service chairs are configured on the salon map.</p>
+              <p role="alert" className="dashboard-error-message mt-5">No service chairs are configured on the salon map.</p>
             ) : (
               <div className="mt-5 space-y-2">
                 <p className="text-xs font-semibold text-ink/65">Choose an available chair for the customer to proceed to</p>
@@ -866,7 +913,7 @@ export default function StaffQueuePage() {
               </div>
             )}
             <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button type="button" disabled={calling} onClick={() => { setCallingItemId(null); setSelectedServiceSeatId(""); }} className="rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70 disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={calling} onClick={() => { setCallingItemId(null); setSelectedServiceSeatId(""); }} className="form-cancel-action rounded-lg px-4 text-sm font-semibold">Cancel</button>
               <button type="button" onClick={() => void handleCall(callingItemId)} disabled={stationsLoading || calling || !selectedServiceSeatId} className="dashboard-primary-action rounded-lg px-4 text-sm font-semibold disabled:opacity-50">{calling ? "Calling..." : "Call customer"}</button>
             </div>
           </section>
@@ -903,7 +950,7 @@ export default function StaffQueuePage() {
                 type="button"
                 disabled={isCancellingEntry}
                 onClick={() => setPendingCancellation(null)}
-                className="min-h-10 rounded-lg border border-mist px-4 text-sm font-semibold text-ink/70 disabled:opacity-50"
+                className="form-cancel-action min-h-10 rounded-lg px-4 text-sm font-semibold"
               >
                 Keep visit
               </button>
@@ -917,6 +964,20 @@ export default function StaffQueuePage() {
             </div>
           </form>
         </div>
+      )}
+      {referencePhoto && createPortal(
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-ink/60 p-4" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setReferencePhoto(null);
+        }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="staff-reference-photo-title" className="w-full max-w-2xl rounded-2xl border border-mist bg-white p-4 shadow-2xl sm:p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 id="staff-reference-photo-title" className="font-display text-lg font-semibold text-ink">Customer reference photo</h2>
+              <button type="button" aria-label="Close reference photo" onClick={() => setReferencePhoto(null)} className="rounded-lg px-2 text-xl text-ink/50 hover:bg-porcelain">×</button>
+            </div>
+            <img src={referencePhoto} alt="Customer-provided service reference" className="mx-auto max-h-[75dvh] max-w-full rounded-lg object-contain" />
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { ProtectedRoute } from "../shared/routes/ProtectedRoute";
 
@@ -41,7 +41,7 @@ export function AppRoutes() {
       {/* Customer joins the queue */}
       <Route
         path="/"
-        element={<CustomerJoinPage />}
+        element={<CustomerQueueLanding />}
       />
       <Route path="/kiosk" element={<KioskSession />}>
         <Route index element={<CustomerJoinPage />} />
@@ -206,6 +206,11 @@ export function AppRoutes() {
     </Routes>
     </Suspense>
   );
+}
+
+function CustomerQueueLanding() {
+  const [searchParams] = useSearchParams();
+  return searchParams.has("track") ? <QueueStatusPage /> : <CustomerJoinPage />;
 }
 
 function LegacyStaffRedirect() {

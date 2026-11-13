@@ -3,7 +3,7 @@ export type ArrivalType = "walk_in" | "appointment";
 
 export function serviceLane(category: string | null | undefined) {
   const normalized = (category ?? "").trim().toLowerCase();
-  if (/hair|rebond|hairstyl|make[\s_-]?up|brows?|eyebrows?|lash/.test(normalized)) return "hair";
+  if (/hair|rebond|hairstyl|stylist|make[\s_-]?up|brows?|eyebrows?|lash/.test(normalized)) return "hair";
   if (/nail|mani|pedi|foot/.test(normalized)) return "nails";
   return "other";
 }

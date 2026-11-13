@@ -27,7 +27,6 @@ export const BACKUP_TABLES = [
   "services",
   "staff_availability",
   "staff_rebalance_requests",
-  "staff_role_catalog",
   "stations",
   "system_settings",
 ] as const;

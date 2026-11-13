@@ -5,6 +5,8 @@ export function AdminAccountPage() {
     <AccountProfilePage
       portalLabel="LynQ Admin"
       passwordPath="/lyn-co/admin/change-password"
+      backPath="/lyn-co/admin"
+      settingsPath="/lyn-co/admin/module/settings-branding"
     />
   );
 }

@@ -23,7 +23,7 @@ export function AdminPageLayout({
 
   return (
     <main
-      className="pastel-pink-gradient-page flex h-full min-w-0 min-h-0 flex-col overflow-hidden px-4 pb-5 pt-2 text-ink sm:px-6 sm:pb-6 sm:pt-3"
+      className="pastel-pink-gradient-page flex h-full min-w-0 min-h-0 flex-col overflow-hidden px-4 pb-10 pt-2 text-ink sm:px-6 sm:pb-10 sm:pt-3"
       aria-busy={ariaBusy}
       style={{ minHeight: fullHeight ? 0 : undefined }}
     >

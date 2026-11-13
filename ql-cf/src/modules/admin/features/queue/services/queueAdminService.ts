@@ -97,14 +97,14 @@ export interface QueueAddOnService {
   name: string;
   category: string | null;
   price: number;
-  duration_minutes: number;
+  duration_minutes: number | null;
 }
 
 export type ServiceLane = "hair" | "nails" | "other";
 
 export function serviceLaneForCategory(category: string | null | undefined): ServiceLane {
   const normalized = (category ?? "").trim().toLowerCase();
-  if (/hair|rebond|hairstyl|make[\s_-]?up|brows?|eyebrows?|lash/.test(normalized)) return "hair";
+  if (/hair|rebond|hairstyl|stylist|make[\s_-]?up|brows?|eyebrows?|lash/.test(normalized)) return "hair";
   if (/nail|mani|pedi|foot/.test(normalized)) return "nails";
   return "other";
 }
@@ -130,6 +130,7 @@ export interface QueueEntryRow {
   position: number | null;
   estimatedDuration: number;
   additionalNotes: string | null;
+  referencePhotoPath: string | null;
   packageTitle: string | null;
   packageType: "service_bundle" | "prepaid_sessions" | null;
   promotionId: string | null;
@@ -163,6 +164,7 @@ function mapQueueRow(
     noShowRiskReason: noShowRisks.get(row.id) ?? null,
     estimatedDuration: row.estimated_duration,
     additionalNotes: row.additional_notes,
+    referencePhotoPath: row.reference_photo_path ?? null,
     packageTitle: row.service_packages?.title ?? null,
     packageType: row.service_packages?.package_type ?? null,
     promotionId: row.promotion_id ?? null,
@@ -229,6 +231,11 @@ const QUEUE_SELECT = `
   )
 `;
 
+export async function fetchQueueReferencePhoto(entryId: string): Promise<string> {
+  const result = await apiRequest<{ url: string }>(`/api/queue/staff/queue-entries/${entryId}/reference-photo`);
+  return result.url;
+}
+
 export interface QueueCustomerDetails {
   isVip: boolean;
   tags: { name: string; color: string }[];
@@ -293,7 +300,7 @@ export async function fetchQueueNoShowRisks(): Promise<{ entryId: string; reason
   return risks;
 }
 
-export async function fetchActiveQueue(includeNoShowRisks = true): Promise<QueueEntryRow[]> {
+export async function fetchActiveQueue(includeNoShowRisks = false): Promise<QueueEntryRow[]> {
   const [
     { data, error },
     { data: stations, error: stationsError },
@@ -385,7 +392,7 @@ export function subscribeToQueueChanges(onChange: () => void): () => void {
     }, 100);
   };
   const channel = supabaseClient
-    .channel("admin-queue-entries")
+    .channel(createQueueRealtimeChannelName("admin-queue-entries"))
     .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries" }, scheduleRefresh)
     .on("postgres_changes", { event: "*", schema: "public", table: "queue_entry_services" }, scheduleRefresh)
     .on("postgres_changes", { event: "*", schema: "public", table: "staff_availability" }, scheduleRefresh)
@@ -395,6 +402,10 @@ export function subscribeToQueueChanges(onChange: () => void): () => void {
     if (refreshTimer !== null) window.clearTimeout(refreshTimer);
     supabaseClient.removeChannel(channel);
   };
+}
+
+export function createQueueRealtimeChannelName(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** Cancel or no-show the WHOLE visit — distinct from finishing one service
@@ -543,6 +554,7 @@ export interface ServiceSeatOption {
   category: string;
   status: "free" | "busy" | "reserved";
   isEligible: boolean;
+  sharedWithVisit?: boolean;
 }
 
 function serviceSeatMatchesCategory(serviceCategory: string, seatCategory: string, seatLabel: string) {
@@ -587,16 +599,28 @@ export async function fetchAvailableStations(
   );
 
   if (staffId) {
-    const { data: assignedStations, error: assignedStationsError } = await supabaseClient
-      .from("stations")
-      .select("id")
-      .eq("home_staff_id", staffId)
-      .eq("is_active", true);
+    const [{ data: assignedStations, error: assignedStationsError }, { data: grants, error: grantsError }] = await Promise.all([
+      supabaseClient
+        .from("stations")
+        .select("id")
+        .eq("home_staff_id", staffId)
+        .eq("is_active", true),
+      supabaseClient
+        .from("staff_station_coverage_grants")
+        .select("station_id")
+        .eq("staff_id", staffId)
+        .is("revoked_at", null)
+        .gt("expires_at", new Date().toISOString()),
+    ]);
     if (assignedStationsError) throw new Error(assignedStationsError.message);
+    if (grantsError) throw new Error(grantsError.message);
 
-    const assignedIds = new Set((assignedStations ?? []).map((station) => station.id));
+    const assignedIds = new Set([
+      ...(assignedStations ?? []).map((station) => station.id),
+      ...(grants ?? []).map((grant) => grant.station_id),
+    ]);
     eligibleStations = eligibleStations.filter((station) =>
-      assignedIds.size > 0 ? assignedIds.has(station.id) : station.home_staff_id === null
+      assignedIds.has(station.id)
     );
   }
 
@@ -612,29 +636,46 @@ export async function fetchServiceSeatOptions(
   category: string,
   serviceItemId: string,
 ): Promise<ServiceSeatOption[]> {
+  const { data: target, error: targetError } = await supabaseClient
+    .from("queue_entry_services")
+    .select("queue_entry_id")
+    .eq("id", serviceItemId)
+    .maybeSingle();
+  if (targetError) throw new Error(targetError.message);
+  if (!target) throw new Error("Queue service was not found.");
+
   const { data: seats, error: seatsError } = await supabaseClient
     .from("customer_service_seats")
     .select("id, label, category")
     .eq("is_active", true)
     .order("label");
   if (seatsError) throw new Error(seatsError.message);
-
   if (!seats?.length) return [];
 
   const { data: reservations, error: reservationsError } = await supabaseClient
     .from("queue_entry_services")
-    .select("id, customer_service_seat_id, customer_seat_reserved_until, status")
+    .select("id, queue_entry_id, customer_service_seat_id, customer_seat_reserved_until, status")
     .in("customer_service_seat_id", seats.map((seat) => seat.id))
     .in("status", ["pending", "in_service"])
     .neq("id", serviceItemId);
   if (reservationsError) throw new Error(reservationsError.message);
 
   const now = Date.now();
-  const reservedStatuses = new Map((reservations ?? [])
-    .filter((reservation) =>
-      reservation.customer_seat_reserved_until === null
-      || new Date(reservation.customer_seat_reserved_until).getTime() > now
-    )
+  const activeReservations = (reservations ?? []).filter((reservation) =>
+    reservation.status === "in_service"
+    || (reservation.customer_seat_reserved_until !== null
+      && new Date(reservation.customer_seat_reserved_until).getTime() > now)
+  );
+  const sharedSeatIds = new Set(activeReservations
+    .filter((reservation) => reservation.queue_entry_id === target.queue_entry_id)
+    .map((reservation) => reservation.customer_service_seat_id)
+    .filter((seatId): seatId is string => Boolean(seatId)));
+  const sharedBusySeatIds = new Set(activeReservations
+    .filter((reservation) => reservation.queue_entry_id === target.queue_entry_id && reservation.status === "in_service")
+    .map((reservation) => reservation.customer_service_seat_id)
+    .filter((seatId): seatId is string => Boolean(seatId)));
+  const reservedStatuses = new Map(activeReservations
+    .filter((reservation) => reservation.queue_entry_id !== target.queue_entry_id)
     .filter((reservation): reservation is typeof reservation & { customer_service_seat_id: string } =>
       Boolean(reservation.customer_service_seat_id)
     )
@@ -646,8 +687,17 @@ export async function fetchServiceSeatOptions(
       id: seat.id,
       label: seat.label,
       category: seat.category,
-      status: reservationStatus === "in_service" ? "busy" : reservationStatus ? "reserved" : "free",
-      isEligible: serviceSeatMatchesCategory(category, seat.category, seat.label),
+      status: reservationStatus === "in_service"
+        ? "busy"
+        : reservationStatus
+          ? "reserved"
+          : sharedBusySeatIds.has(seat.id)
+            ? "busy"
+            : sharedSeatIds.has(seat.id)
+              ? "reserved"
+              : "free",
+      isEligible: serviceSeatMatchesCategory(category, seat.category, seat.label) || sharedSeatIds.has(seat.id),
+      sharedWithVisit: sharedSeatIds.has(seat.id),
     };
   });
 }

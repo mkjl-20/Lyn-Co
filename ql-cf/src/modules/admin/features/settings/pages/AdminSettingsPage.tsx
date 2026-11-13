@@ -7,7 +7,8 @@ import { SalonLogoImage } from "@/shared/components/SalonLogoImage";
 import { QueueQrGenerator } from "../../queue/components/QueueQrGenerator";
 import { AdminPageLayout } from "../../../components/AdminPageLayout";
 import { PhilippinePhoneInput } from "@/shared/components/PhilippinePhoneInput";
-import { buildCustomerQueueUrl } from "@/shared/lib/queueQr";
+import { buildCustomerQueueUrl, resolveCustomerQueueBaseUrl } from "@/shared/lib/queueQr";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
 interface SalonSettings {
   salonName: string;
@@ -29,7 +30,8 @@ const DEFAULT_SETTINGS: SalonSettings = {
   openingTime: "09:00",
   closingTime: "21:00",
   crowdThreshold: 8,
-  queueUrl: import.meta.env.VITE_PUBLIC_QUEUE_URL?.trim() ?? "",
+  queueUrl: import.meta.env.VITE_PUBLIC_QUEUE_URL?.trim()
+    || (typeof window !== "undefined" ? window.location.origin : ""),
   themeColor: "monochrome",
   logoDataUrl: "",
   bannerDataUrl: "",
@@ -44,6 +46,7 @@ const SETTINGS_SECTIONS = [
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
 
 export function AdminSettingsPage() {
+  const { confirm } = useFeedback();
   const [activeSection, setActiveSection] = useState<SettingsSection>("salon");
   const [settings, setSettings] = useState<SalonSettings>(DEFAULT_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
@@ -66,7 +69,10 @@ export function AdminSettingsPage() {
       .then((result) => {
         if (isMounted) {
           const loadedSettings = { ...DEFAULT_SETTINGS, ...result.settings };
-          loadedSettings.queueUrl = result.settings.queueUrl || DEFAULT_SETTINGS.queueUrl;
+          loadedSettings.queueUrl = resolveCustomerQueueBaseUrl(
+            result.settings.queueUrl || DEFAULT_SETTINGS.queueUrl,
+            window.location.origin,
+          );
           lastSavedQueueUrl.current = loadedSettings.queueUrl;
           if (!isBrandTheme(loadedSettings.themeColor)) loadedSettings.themeColor = DEFAULT_SETTINGS.themeColor;
           setSettings({
@@ -228,7 +234,11 @@ export function AdminSettingsPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (activeSection === "qr") return;
-    if (!window.confirm("Save these settings and apply them across the queue and customer updates?")) {
+    if (!await confirm({
+      title: "Save salon settings",
+      message: "Save these settings and apply them across the queue and customer updates?",
+      confirmLabel: "Save settings",
+    })) {
       return;
     }
     setIsSaving(true);
@@ -294,7 +304,7 @@ export function AdminSettingsPage() {
       <form
         id="salon-settings-form"
         onSubmit={handleSubmit}
-        className="flex min-h-0 flex-1 flex-col items-center justify-start overflow-hidden"
+        className="flex min-h-0 flex-1 flex-col items-center justify-start overflow-x-hidden overflow-y-auto"
       >
         {errorMessage && (
           <div role="alert" className="rounded-xl border border-clay/20 bg-clay-light px-4 py-3 text-sm text-clay">
@@ -312,17 +322,17 @@ export function AdminSettingsPage() {
         ) : (
           <>
             {activeSection === "salon" && <>
-            <div className="grid w-full max-w-6xl gap-2 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-stretch">
-            <section className="rounded-2xl border border-mist/70 bg-white p-2 shadow-sm sm:p-3">
+            <div className="grid w-full max-w-6xl gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-stretch">
+            <section className="rounded-2xl border border-mist/70 bg-white p-4 shadow-sm sm:p-5">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-sm font-semibold text-ink">Brand &amp; customer banner</h2>
                 <span className="text-[10px] font-medium uppercase tracking-wide text-ink/40">Visual identity</span>
               </div>
-              <div className="mt-2 flex items-center gap-3">
+              <div className="mt-4 flex items-center gap-3">
                 <ImagePlus size={18} aria-hidden="true" className="shrink-0 text-sage-deep" />
                 <h3 className="font-display text-sm font-semibold text-ink">Logo</h3>
               </div>
-              <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-center">
                 <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-mist bg-porcelain text-3xl font-semibold text-ink/35 sm:h-24 sm:w-24">
                   {settings.logoDataUrl ? (
                     <SalonLogoImage src={settings.logoDataUrl} alt="Salon logo preview" className="h-full w-full object-contain p-2" />
@@ -363,7 +373,7 @@ export function AdminSettingsPage() {
                   {logoError && <p className="w-full text-sm text-clay" role="alert">{logoError}</p>}
                 </div>
               </div>
-              <div className="mt-2">
+              <div className="mt-4">
                 <div className="flex items-center gap-3">
                   <ImagePlus size={18} aria-hidden="true" className="shrink-0 text-sage-deep" />
                   <div>
@@ -372,7 +382,7 @@ export function AdminSettingsPage() {
                   </div>
                 </div>
               </div>
-              <div className="mt-2 grid gap-2">
+              <div className="mt-3 grid gap-3">
                 <div className="relative flex aspect-[4/1] min-h-24 overflow-hidden rounded-xl bg-[#505050] text-white">
                   {settings.bannerDataUrl && (
                     <img src={settings.bannerDataUrl} alt="Customer banner photo preview" className="absolute inset-0 h-full w-full object-cover" />
@@ -419,14 +429,14 @@ export function AdminSettingsPage() {
             </section>
             <div className="flex flex-col gap-4">
               <section className="overflow-hidden rounded-2xl border border-mist/70 bg-white shadow-sm">
-                <div className="flex items-center gap-2 px-3 pt-2">
+                <div className="flex items-center gap-2 px-4 pt-4">
                   <Store size={17} aria-hidden="true" className="text-sage-deep" />
                   <div>
                     <h2 className="font-display text-base font-semibold text-ink">Salon information</h2>
                   </div>
                 </div>
-                <p className="px-3 pt-1 text-xs text-ink/50 sm:px-4">The details shown to your customers.</p>
-                <div className="grid gap-1 p-2 sm:grid-cols-2 sm:p-3">
+                <p className="px-4 pt-2 text-xs text-ink/50">The details shown to your customers.</p>
+                <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
                   <label className="text-xs font-semibold text-ink/65 sm:col-span-2">
                     Salon name
                     <input
@@ -458,14 +468,14 @@ export function AdminSettingsPage() {
                 </div>
               </section>
               <section className="overflow-hidden rounded-2xl border border-mist/70 bg-white shadow-sm">
-                <div className="flex items-center gap-2 px-3 pt-2">
+                <div className="flex items-center gap-2 px-4 pt-4">
                   <Clock3 size={17} aria-hidden="true" className="text-sage-deep" />
                   <div>
                     <h2 className="font-display text-base font-semibold text-ink">Hours &amp; queue alerts</h2>
                   </div>
                 </div>
-                <p className="px-3 pt-1 text-xs text-ink/50 sm:px-4">Choose when you’re open and when to flag a busy queue.</p>
-                <div className="grid gap-1 p-2 sm:grid-cols-2 sm:p-3">
+                <p className="px-4 pt-2 text-xs text-ink/50">Choose when you’re open and when to flag a busy queue.</p>
+                <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
                   <label className="text-xs font-semibold text-ink/65">
                     Opens
                     <input
@@ -594,7 +604,6 @@ export function AdminSettingsPage() {
           </>
         )}
       </form>
-      <div aria-hidden="true" className="mx-auto mt-2 h-8 w-full max-w-6xl shrink-0 rounded-md bg-neutral-200/80" />
       </div>
     </AdminPageLayout>
   );

@@ -10,8 +10,7 @@ export type Milestone =
   | "staff_reassigned"
   | "service_progress"
   | "service_started"
-  | "service_completed"
-  | "visit_completed";
+  | "service_completed";
 
 const MESSAGES: Record<Milestone, (name: string, salonName: string, extra?: string) => string> = {
   joined: (name, salonName, extra) =>
@@ -29,9 +28,7 @@ const MESSAGES: Record<Milestone, (name: string, salonName: string, extra?: stri
   service_started: (name, salonName, extra) =>
     `Hi ${name}, your service at ${salonName} has started. ${extra ?? ""}`.trim(),
   service_completed: (name, salonName, extra) =>
-    `Hi ${name}, ${extra ?? "Your service is complete."} Thank you for choosing ${salonName}.`,
-  visit_completed: (name, salonName, extra) =>
-    `Hi ${name}, your visit at ${salonName} is complete. ${extra ?? "Please proceed to the cashier for checkout."}`,
+    `Hi ${name}, ${extra ?? "Your service is complete."} You can now proceed to the front desk for payment. Thank you for choosing ${salonName}.`,
 };
 
 export async function sendQueueSms(input: {

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { SalonBrandingContext } from "../context/SalonBrandingContext";
 import { applyBrandTheme, isBrandTheme } from "../lib/brandTheme";
+import { resolveCustomerQueueBaseUrl } from "../lib/queueQr";
 
 export function BrandThemeLoader({ children }: { children: ReactNode }) {
   const [logoDataUrl, setLogoDataUrl] = useState("");
@@ -37,11 +38,15 @@ export function BrandThemeLoader({ children }: { children: ReactNode }) {
         if (loadedBanner !== undefined && typeof loadedBanner !== "string") {
           throw new Error("The customer banner image response was invalid.");
         }
+        const resolvedQueueUrl = resolveCustomerQueueBaseUrl(
+          loadedQueueUrl ?? "",
+          window.location.origin,
+        );
         if (mounted) {
           applyBrandTheme(themeColor);
           setLogoDataUrl(loadedLogo ?? "");
           setBannerDataUrl(loadedBanner ?? "");
-          setQueueUrl(loadedQueueUrl ?? "");
+          setQueueUrl(resolvedQueueUrl);
         }
       })
       .catch((error: unknown) => {

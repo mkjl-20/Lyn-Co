@@ -1,77 +1,16 @@
 import {
-  createContext,
-  useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
 import { supabaseClient } from "@/shared/lib/supabaseClient";
 import { apiRequest } from "@/shared/lib/apiClient";
-
-import type {
-  Session,
-  User,
-} from "@supabase/supabase-js";
-
-export type UserRole = "admin" | "staff";
-
-export type StaffRole =
-  | "hairstylist"
-  | "nail_technician"
-  | "receptionist"
-  | null;
-
-export interface Profile {
-  id: string;
-  username: string;
-  full_name: string | null;
-  account_role: UserRole;
-  staff_role: StaffRole;
-  is_active: boolean;
-  must_change_password: boolean;
-}
-
-export interface CurrentUser {
-  id: string;
-  username: string;
-  fullName: string;
-  accountRole: UserRole;
-  staffRole: StaffRole;
-  isActive: boolean;
-  mustChangePassword: boolean;
-}
-
-interface LoginCredentials {
-  username: string;
-  password: string;
-}
-
-interface LoginResult {
-  accountRole: UserRole;
-}
-
-interface AuthContextType {
-  user: User | null;
-  currentUser: CurrentUser | null;
-  session: Session | null;
-  profile: Profile | null;
-  role: UserRole | null;
-  loading: boolean;
-
-  loginWithUsername: (
-    credentials: LoginCredentials
-  ) => Promise<LoginResult>;
-
-  updateCurrentProfile: (fullName: string) => Promise<void>;
-  logout: () => Promise<void>;
-  signOut: () => Promise<void>;
-}
-
-const AuthContext =
-  createContext<AuthContextType | undefined>(
-    undefined
-  );
+import { removeObsoleteProfileAvatars, uploadProfileAvatar } from "@/shared/lib/profileAvatar";
+import { AuthContext } from "./AuthContextStore";
+import type { CurrentUser, LoginCredentials, LoginResult, Profile, ProfileUpdate, UserRole } from "./AuthContextStore";
+import type { Session, User } from "@supabase/supabase-js";
 
 interface AuthProviderProps {
   children: ReactNode;
@@ -91,6 +30,7 @@ export function AuthProvider({
 
   const [loading, setLoading] =
     useState(true);
+  const profileReadyForUserId = useRef<string | null>(null);
 
   /*
    * Convert database profile into the
@@ -113,6 +53,12 @@ export function AuthProvider({
         profileData.is_active,
       mustChangePassword:
         profileData.must_change_password,
+      contactEmail: typeof user?.user_metadata?.contact_email === "string"
+        ? user.user_metadata.contact_email
+        : "",
+      avatarUrl: typeof user?.user_metadata?.avatar_url === "string"
+        ? user.user_metadata.avatar_url
+        : "",
     };
   };
 
@@ -165,6 +111,7 @@ export function AuthProvider({
         is_active: metadata.is_active ?? true,
         must_change_password: metadata.must_change_password ?? false,
       } as Profile : null);
+      profileReadyForUserId.current = userId;
       return;
     }
 
@@ -184,6 +131,7 @@ export function AuthProvider({
         is_active: metadata.is_active ?? true,
         must_change_password: metadata.must_change_password ?? false,
       } as Profile : null);
+      profileReadyForUserId.current = userId;
       return;
     }
 
@@ -195,6 +143,7 @@ export function AuthProvider({
     setProfile(
       data as Profile
     );
+    profileReadyForUserId.current = userId;
   };
 
   /*
@@ -274,6 +223,10 @@ export function AuthProvider({
           event,
           newSession
         ) => {
+          if (event === "INITIAL_SESSION") {
+            return;
+          }
+
           console.log(
             "Auth state changed:",
             event
@@ -297,7 +250,13 @@ export function AuthProvider({
           );
 
           if (!newUser) {
+            profileReadyForUserId.current = null;
             setProfile(null);
+            setLoading(false);
+            return;
+          }
+
+          if (profileReadyForUserId.current === newUser.id) {
             setLoading(false);
             return;
           }
@@ -406,6 +365,7 @@ export function AuthProvider({
     if (sessionError) throw new Error(sessionError.message);
 
     if (data.profile) {
+      profileReadyForUserId.current = data.profile.id;
       setProfile(data.profile);
     }
 
@@ -419,11 +379,30 @@ export function AuthProvider({
     };
   };
 
-  const updateCurrentProfile = async (fullName: string) => {
+  const updateCurrentProfile = async (update: ProfileUpdate) => {
+    const contactEmail = update.contactEmail.trim().toLowerCase();
+    if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+      throw new Error("Enter a valid email address or leave it blank.");
+    }
+    if (!user) throw new Error("Sign in to update your profile.");
+
+    const avatarUrl = update.avatarFile
+      ? await uploadProfileAvatar(user.id, update.avatarFile)
+      : update.removeAvatar ? null : user.user_metadata?.avatar_url ?? null;
     const { profile: updatedProfile } = await apiRequest<{ profile: Profile }>("/api/auth/profile", {
       method: "PATCH",
-      body: JSON.stringify({ fullName }),
+      body: JSON.stringify({ fullName: update.fullName }),
     });
+    const { data, error } = await supabaseClient.auth.updateUser({
+      data: {
+        ...user.user_metadata,
+        contact_email: contactEmail || null,
+        avatar_url: avatarUrl,
+      },
+    });
+    if (error) throw error;
+    await removeObsoleteProfileAvatars(user.id, avatarUrl);
+    if (data.user) setUser(data.user);
     setProfile(updatedProfile);
   };
 
@@ -454,6 +433,7 @@ export function AuthProvider({
     setUser(null);
     setSession(null);
     setProfile(null);
+    profileReadyForUserId.current = null;
   };
 
   const signOut = logout;
@@ -490,20 +470,4 @@ export function AuthProvider({
       {children}
     </AuthContext.Provider>
   );
-}
-
-/*
- * useAuth hook
- */
-export function useAuth() {
-  const context =
-    useContext(AuthContext);
-
-  if (!context) {
-    throw new Error(
-      "useAuth must be used inside AuthProvider"
-    );
-  }
-
-  return context;
 }

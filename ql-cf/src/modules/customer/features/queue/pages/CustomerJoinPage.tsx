@@ -9,9 +9,9 @@ import {
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Brush, ChevronLeft, ChevronRight, Droplets, Hand, LayoutGrid, Package, Palette, Percent, Scissors, Sparkles, UserRound, Wind, X } from "lucide-react";
 
-import { fetchJoinCatalog, fetchPublicPromotions, fetchWaitQuote, joinQueue, type CatalogPackage, type PublicPromotion, type WaitQuote } from "../services/joinQueueService";
+import { fetchJoinCatalog, fetchPublicPromotions, fetchQueueWaitEstimate, fetchWaitQuote, joinQueue, type CatalogPackage, type PublicPromotion, type WaitQuote } from "../services/joinQueueService";
 import { useSalonBranding } from "@/shared/context/SalonBrandingContext";
-import { useAuth } from "@/shared/context/AuthContext";
+import { useAuth } from "@/shared/context/useAuth";
 import { SalonLogoImage } from "@/shared/components/SalonLogoImage";
 import { PortalAccountMenu } from "@/shared/components/PortalAccountMenu";
 import { PhilippinePhoneInput } from "@/shared/components/PhilippinePhoneInput";
@@ -20,6 +20,7 @@ import { supabaseClient } from "@/shared/lib/supabaseClient";
 import { useSalonHours } from "@/shared/hooks/useSalonHours";
 import { formatSalonTime, isAppointmentTimeWithinSalonHours, isAppointmentWithinSalonHours, lastAppointmentTime } from "@/shared/lib/salonHours";
 import { formatTicketNumber } from "@/shared/lib/ticketNumber";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
 /* =========================================================
    TYPES
@@ -32,7 +33,7 @@ interface Service {
   description: string | null;
   price: number;
   price_type: "fixed" | "starting";
-  duration_minutes: number;
+  duration_minutes: number | null;
   is_visible: boolean;
   is_available: boolean;
   display_order: number;
@@ -119,6 +120,8 @@ const fieldClass =
 const customerInfoFieldClass =
   "w-full rounded-lg border border-mist bg-porcelain/40 px-3 py-2.5 text-base text-ink transition " +
   "outline-none focus:outline-none focus:ring-0 focus:shadow-none focus:border-sage/60";
+const MAX_REFERENCE_PHOTO_SIZE = 5 * 1024 * 1024;
+const REFERENCE_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 /* =========================================================
    COMPONENT
@@ -128,6 +131,7 @@ export function CustomerJoinPage() {
   const { logoDataUrl, bannerDataUrl } = useSalonBranding();
   const { salonHours, salonHoursError } = useSalonHours();
   const { user, logout } = useAuth();
+  const { notify } = useFeedback();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -157,7 +161,7 @@ export function CustomerJoinPage() {
   }[]>([]);
   const [joinedParty, setJoinedParty] = useState<{
     id: string;
-    entries: { id: string; customer_name: string; ticket_number: number }[];
+    entries: { id: string; customer_name: string; ticket_number: number; ewtMinutes: number | null }[];
   } | null>(null);
 
   /* =======================================================
@@ -167,7 +171,6 @@ export function CustomerJoinPage() {
   const [arrivalType, setArrivalType] = useState<ArrivalType>("walk_in");
   const [appointmentDate, setAppointmentDate] = useState(""); // "YYYY-MM-DD"
   const [appointmentTime, setAppointmentTime] = useState(""); // "HH:MM", 24h
-  const [appointmentTimeError, setAppointmentTimeError] = useState<string | null>(null);
 
   /* =======================================================
      SERVICES
@@ -196,6 +199,8 @@ export function CustomerJoinPage() {
   ======================================================= */
 
   const [additionalNotes, setAdditionalNotes] = useState("");
+  const [referencePhotoDataUrl, setReferencePhotoDataUrl] = useState<string | null>(null);
+  const [referencePhotoError, setReferencePhotoError] = useState<string | null>(null);
 
   /* =======================================================
      STAFF
@@ -475,8 +480,9 @@ export function CustomerJoinPage() {
   }, [activeOfferSlide, offerSlides.length, scrollToOffer]);
 
   const totalDuration = useMemo(() => {
+    if (selectedServices.some((service) => service.duration_minutes === null)) return null;
     return selectedServices.reduce(
-      (total, service) => total + Number(service.duration_minutes || 0),
+      (total, service) => total + Number(service.duration_minutes),
       0
     );
   }, [selectedServices]);
@@ -544,12 +550,17 @@ export function CustomerJoinPage() {
     return `${year}-${month}-${day}`;
   }
 
-  function formatServicePrice(service: Service) {
-    const price = formatCurrency(Number(service.price || 0));
-    return service.price_type === "starting" ? `From ${price}` : price;
+  function isPastAppointment(date: string, time: string) {
+    const scheduled = new Date(`${date}T${time}:00`);
+    return !Number.isNaN(scheduled.getTime()) && scheduled.getTime() <= Date.now();
   }
 
-  function formatDuration(minutes: number) {
+  function formatServicePrice(service: Service) {
+    return formatCurrency(Number(service.price || 0));
+  }
+
+  function formatDuration(minutes: number | null) {
+    if (minutes === null) return "Duration not set";
     if (minutes <= 0) return "—";
     if (minutes < 60) return `${minutes} min`;
     const hours = Math.floor(minutes / 60);
@@ -594,7 +605,9 @@ export function CustomerJoinPage() {
     }
 
     if (selectedServiceIds.length === 0) {
-      setErrorMessage("Please select at least one service.");
+      setErrorMessage(partyEnabled
+        ? "Select at least one service for Member 1 (you) and each party member."
+        : "Please select at least one service.");
       return;
     }
 
@@ -622,30 +635,29 @@ export function CustomerJoinPage() {
 
     if (arrivalType === "appointment") {
       if (!appointmentDate || !appointmentTime) {
-        setErrorMessage("Please select an appointment date and time.");
+        notify("error", "Please select an appointment date and time.");
         return;
       }
 
       const scheduled = new Date(`${appointmentDate}T${appointmentTime}:00`);
 
       if (Number.isNaN(scheduled.getTime())) {
-        setErrorMessage("Invalid appointment date or time.");
+        notify("error", "Invalid appointment date or time.");
         return;
       }
 
       if (scheduled.getTime() <= Date.now()) {
-        setErrorMessage("Appointment time must be in the future.");
+        notify("error", "That appointment time has already passed. Choose a future time.");
         return;
       }
 
       if (!salonHours) {
-        setErrorMessage(salonHoursError ?? "Salon business hours are still loading. Please try again.");
+        notify("error", salonHoursError ?? "Salon business hours are still loading. Please try again.");
         return;
       }
 
       if (!isAppointmentWithinSalonHours(`${appointmentDate}T${appointmentTime}`, salonHours)) {
-        setAppointmentTimeError(`Choose a time during salon hours (${formatSalonTime(salonHours.openingTime)}–${formatSalonTime(salonHours.closingTime)}).`);
-        setErrorMessage(`Appointments must start during salon hours (${formatSalonTime(salonHours.openingTime)}–${formatSalonTime(salonHours.closingTime)}).`);
+        notify("error", `Appointments must start during salon hours (${formatSalonTime(salonHours.openingTime)}–${formatSalonTime(salonHours.closingTime)}).`);
         return;
       }
     }
@@ -662,6 +674,7 @@ export function CustomerJoinPage() {
         customerName: cleanName,
         contactNumber: cleanContact,
         additionalNotes: cleanNotes,
+        ...(referencePhotoDataUrl ? { referencePhotoDataUrl } : {}),
         preferredStaffId: selectedStaffId,
         servicePreferences: Object.entries(servicePreferences)
           .filter(([serviceId, staffId]) => selectedServiceIds.includes(serviceId) && Boolean(staffId))
@@ -687,15 +700,38 @@ export function CustomerJoinPage() {
       });
 
       if (result.party) {
+        const partyId = result.party.id;
+        const entries = result.party.entries.map(({ id, customer_name, ticket_number }) => ({
+          id,
+          customer_name,
+          ticket_number,
+          ewtMinutes: null as number | null,
+        }));
         setJoinedParty({
-          id: result.party.id,
-          entries: result.party.entries.map(({ id, customer_name, ticket_number }) => ({
-            id,
-            customer_name,
-            ticket_number,
-          })),
+          id: partyId,
+          entries,
         });
         setSuccessMessage("Your party has joined the queue. Each member has a separate ticket.");
+        void Promise.all(entries.map(async (entry) => {
+          try {
+            const { wait } = await fetchQueueWaitEstimate(entry.id);
+            return { id: entry.id, ewtMinutes: wait.ewtMinutes };
+          } catch (error) {
+            console.error(`Party queue estimate failed for ${entry.id}:`, error);
+            return { id: entry.id, ewtMinutes: null };
+          }
+        })).then((estimates) => {
+          setJoinedParty((current) => {
+            if (!current || current.id !== partyId) return current;
+            return {
+              ...current,
+              entries: current.entries.map((entry) => ({
+                ...entry,
+                ewtMinutes: estimates.find((estimate) => estimate.id === entry.id)?.ewtMinutes ?? null,
+              })),
+            };
+          });
+        });
         return;
       }
 
@@ -710,7 +746,9 @@ export function CustomerJoinPage() {
         : `/queue-status/${result.entry.id}`);
     } catch (error) {
       console.error("Join queue failed:", error);
-      setErrorMessage(error instanceof Error ? error.message : "Unable to join the queue.");
+      const message = error instanceof Error ? error.message : "Unable to join the queue.";
+      if (arrivalType === "appointment") notify("error", message);
+      else setErrorMessage(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -843,7 +881,7 @@ export function CustomerJoinPage() {
         <form id="booking" onSubmit={handleSubmit} className="customer-booking-form grid items-start gap-3 sm:gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:gap-6" aria-busy={isSubmitting}>
           <div className="min-w-0 space-y-4 sm:space-y-6">
             {errorMessage && (
-              <div role="alert" className="border border-clay/30 bg-clay-light px-4 py-3 text-sm text-clay">{errorMessage}</div>
+              <div role="alert" className="dashboard-error-message">{errorMessage}</div>
             )}
             {successMessage && (
               <div role="status" className="border border-success/30 bg-success-soft px-4 py-3 text-sm text-success">{successMessage}</div>
@@ -853,13 +891,16 @@ export function CustomerJoinPage() {
                 <h2 className="font-semibold text-success">Party tickets</h2>
                 <ul className="mt-2 space-y-2 text-sm text-ink">
                   {joinedParty.entries.map((entry) => (
-                    <li key={entry.id} className="flex flex-wrap items-center justify-between gap-2">
-                      <span>{entry.customer_name} · Ticket {formatTicketNumber(entry.ticket_number)}</span>
+                    <li key={entry.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                      <span>{entry.customer_name} · {formatTicketNumber(entry.ticket_number)}</span>
+                      <span className="text-xs text-ink/60">
+                        {entry.ewtMinutes === null ? "Wait estimate updating" : `About ${Math.round(entry.ewtMinutes / 5) * 5} min`}
+                      </span>
                       <a
                         className="font-semibold text-sage-deep underline underline-offset-2"
                         href={`${joinSource === "kiosk" ? "/kiosk/queue-status" : "/queue-status"}/${entry.id}`}
                       >
-                        View status
+                        View
                       </a>
                     </li>
                   ))}
@@ -886,7 +927,23 @@ export function CustomerJoinPage() {
               {arrivalType === "appointment" && (
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <label htmlFor="appointment-date" className="block text-sm font-semibold text-ink/80">Date
-                    <input id="appointment-date" type="date" value={appointmentDate} onChange={(event) => setAppointmentDate(event.target.value)} min={localDateString(new Date())} required className="dashboard-filter-control mt-1.5 w-full focus:border-sage-deep" />
+                    <input
+                      id="appointment-date"
+                      type="date"
+                      value={appointmentDate}
+                      onChange={(event) => {
+                        const nextDate = event.target.value;
+                        setAppointmentDate(nextDate);
+                        setErrorMessage(null);
+                        if (appointmentTime && isPastAppointment(nextDate, appointmentTime)) {
+                          setAppointmentTime("");
+                          notify("error", "That appointment time has already passed. Choose a future time.");
+                        }
+                      }}
+                      min={localDateString(new Date())}
+                      required
+                      className="dashboard-filter-control mt-1.5 w-full focus:border-sage-deep"
+                    />
                   </label>
                   <label htmlFor="appointment-time" className="block text-sm font-semibold text-ink/80">Time
                     <input
@@ -897,26 +954,26 @@ export function CustomerJoinPage() {
                         const nextTime = event.target.value;
                         if (nextTime && salonHours && !isAppointmentTimeWithinSalonHours(nextTime, salonHours)) {
                           setAppointmentTime("");
-                          setAppointmentTimeError(`Choose a time during salon hours (${formatSalonTime(salonHours.openingTime)}–${formatSalonTime(salonHours.closingTime)}).`);
+                          notify("error", `Choose a time during salon hours (${formatSalonTime(salonHours.openingTime)}–${formatSalonTime(salonHours.closingTime)}).`);
+                          return;
+                        }
+                        if (nextTime && appointmentDate && isPastAppointment(appointmentDate, nextTime)) {
+                          setAppointmentTime("");
+                          notify("error", "That appointment time has already passed. Choose a future time.");
                           return;
                         }
                         setAppointmentTime(nextTime);
-                        setAppointmentTimeError(null);
                         setErrorMessage(null);
                       }}
                       min={salonHours?.openingTime}
                       max={salonHours ? lastAppointmentTime(salonHours.closingTime) : undefined}
                       disabled={!salonHours}
                       required
-                      aria-invalid={Boolean(appointmentTimeError)}
-                      aria-describedby={appointmentTimeError ? "appointment-time-error" : undefined}
                       className="dashboard-filter-control mt-1.5 w-full focus:border-sage-deep"
                     />
                   </label>
-                  {appointmentTimeError
-                    ? <p id="appointment-time-error" role="alert" className="text-sm text-clay sm:col-span-2">{appointmentTimeError}</p>
-                    : salonHoursError
-                    ? <p role="alert" className="text-sm text-clay sm:col-span-2">Unable to verify appointment times: {salonHoursError}</p>
+                  {salonHoursError
+                    ? <p role="alert" className="dashboard-error-message sm:col-span-2">Unable to verify appointment times: {salonHoursError}</p>
                     : salonHours
                       ? <p className="text-sm text-ink/65 sm:col-span-2">Appointments must start during salon hours ({formatSalonTime(salonHours.openingTime)}–{formatSalonTime(salonHours.closingTime)}).</p>
                       : <p role="status" className="text-sm text-ink/65 sm:col-span-2">Loading salon hours…</p>}
@@ -964,7 +1021,7 @@ export function CustomerJoinPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="font-display text-xl font-semibold sm:text-2xl">Joining as a party?</h2>
-                  <p className="mt-1 text-sm text-ink/60">Each member gets a separate queue ticket and service selection.</p>
+                  <p className="mt-1 text-sm text-ink/60">Member 1 is you; select your service below. Each added member gets a separate ticket and service selection.</p>
                 </div>
                 <button
                   type="button"
@@ -986,7 +1043,7 @@ export function CustomerJoinPage() {
               </div>
               {partyEnabled && (
                 <div className="mt-4 space-y-4">
-                  <p className="text-sm text-ink/65">Each person gets a separate ticket. SMS goes to the first member. Add up to 7 members.</p>
+                  <p className="text-sm text-ink/65">Select at least one service for yourself and every added member. Each gets a separate ticket; SMS goes to your mobile number. Add up to 7 members.</p>
                   {partyMembers.map((member, memberIndex) => (
                     <fieldset key={memberIndex} aria-labelledby={`party-member-${memberIndex}`} className="rounded-2xl border border-mist bg-white p-4 shadow-sm sm:p-5">
                       <div className="flex items-center justify-between gap-3">
@@ -1038,7 +1095,7 @@ export function CustomerJoinPage() {
                                     <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs ${selected ? "border-sage-deep bg-sage-deep text-white" : "border-mist text-transparent"}`} aria-hidden="true">✓</span>
                                     <span className="min-w-0 flex-1">
                                       <span className="block text-sm font-semibold text-ink">{service.name}</span>
-                                      <span className="mt-1 block text-sm text-ink/65">{formatDuration(Number(service.duration_minutes))}</span>
+                                      <span className="mt-1 block text-sm text-ink/65">{formatDuration(service.duration_minutes)}</span>
                                     </span>
                                     <span className="shrink-0 text-sm font-semibold text-sage-deep">{formatServicePrice(service)}</span>
                                   </button>
@@ -1109,7 +1166,7 @@ export function CustomerJoinPage() {
             <section className="border-b border-mist pb-6">
               <div className="flex items-end justify-between gap-3">
                 <div>
-                  <h2 className="font-display text-xl font-semibold sm:text-2xl">Services</h2>
+                  <h2 className="font-display text-xl font-semibold sm:text-2xl">{partyEnabled ? "Member 1 (you): services" : "Services"}</h2>
                 </div>
                 {selectedServiceIds.length > 0 && <span className="text-xs font-semibold text-sage-deep">{selectedServiceIds.length} selected</span>}
               </div>
@@ -1260,7 +1317,7 @@ export function CustomerJoinPage() {
                         <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs ${selected ? "border-sage-deep bg-sage-deep text-white" : "border-mist text-transparent"}`} aria-hidden="true">✓</span>
                         <span className="min-w-0 flex-1">
                           <span className="block text-sm font-semibold text-ink">{service.name}</span>
-                          <span className="mt-1 block text-sm text-ink/65">{formatDuration(Number(service.duration_minutes))}</span>
+                          <span className="mt-1 block text-sm text-ink/65">{formatDuration(service.duration_minutes)}</span>
                         </span>
                         <span className="shrink-0 text-sm font-semibold text-sage-deep">{formatServicePrice(service)}</span>
                       </button>
@@ -1335,6 +1392,63 @@ export function CustomerJoinPage() {
                 className={`${fieldClass} mt-2 resize-none border-mist bg-white text-ink focus:border-sage-deep`}
               />
               <p className="mt-1 text-right text-[10px] text-ink/50">{additionalNotes.length}/500</p>
+              <div className="mt-4">
+                <label htmlFor="reference-photo" className="text-sm font-semibold text-ink">
+                  Reference photo <span className="font-normal text-ink/55">Optional · for the salon team</span>
+                </label>
+                <input
+                  id="reference-photo"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="mt-2 block w-full text-sm leading-9 text-ink/70 file:mr-3 file:inline-flex file:min-h-9 file:items-center file:justify-center file:align-middle file:rounded-lg file:border-0 file:bg-sage-light file:px-3 file:py-0 file:font-semibold file:leading-none file:text-sage-deep file:transition-transform file:duration-150 hover:file:-translate-y-0.5 hover:file:bg-sage-light/70 active:file:translate-y-0 active:file:scale-[0.98]"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    setReferencePhotoError(null);
+                    if (!file) {
+                      setReferencePhotoDataUrl(null);
+                      return;
+                    }
+                    if (!REFERENCE_PHOTO_TYPES.includes(file.type)) {
+                      setReferencePhotoError("Choose a JPG, PNG, or WebP image.");
+                      setReferencePhotoDataUrl(null);
+                      event.currentTarget.value = "";
+                      return;
+                    }
+                    if (file.size > MAX_REFERENCE_PHOTO_SIZE) {
+                      setReferencePhotoError("The photo must be 5 MB or smaller.");
+                      setReferencePhotoDataUrl(null);
+                      event.currentTarget.value = "";
+                      return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      if (typeof reader.result === "string") setReferencePhotoDataUrl(reader.result);
+                      else setReferencePhotoError("Unable to read this photo. Please try another image.");
+                    };
+                    reader.onerror = () => setReferencePhotoError("Unable to read this photo. Please try another image.");
+                    reader.readAsDataURL(file);
+                  }}
+                />
+                <p className="mt-1 text-xs text-ink/50">JPG, PNG, or WebP · up to 5 MB</p>
+                {referencePhotoError && <p className="mt-1 text-sm text-red-700" role="alert">{referencePhotoError}</p>}
+                {referencePhotoDataUrl && (
+                  <div className="mt-3 flex items-start gap-3">
+                    <img src={referencePhotoDataUrl} alt="Selected reference photo preview" className="h-24 w-24 rounded-lg border border-mist object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReferencePhotoDataUrl(null);
+                        setReferencePhotoError(null);
+                        const input = document.getElementById("reference-photo") as HTMLInputElement | null;
+                        if (input) input.value = "";
+                      }}
+                      className="rounded-lg border border-mist px-3 py-2 text-sm font-medium text-ink/70 hover:bg-porcelain"
+                    >
+                      Remove photo
+                    </button>
+                  </div>
+                )}
+              </div>
             </section>
           </div>
 
@@ -1420,7 +1534,7 @@ export function CustomerJoinPage() {
 
               <button
                 type="submit"
-                disabled={isSubmitting || Boolean(joinedParty) || servicesLoading || selectedServiceIds.length === 0 || !privacyConsent}
+                disabled={isSubmitting || Boolean(joinedParty) || servicesLoading || (!partyEnabled && selectedServiceIds.length === 0) || !privacyConsent}
                 className="dashboard-primary-action mt-5 min-h-12 w-full rounded-md px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {isSubmitting ? "Working…" : joinedParty ? "Party joined" : arrivalType === "appointment" ? "Book appointment" : "Join the queue"}

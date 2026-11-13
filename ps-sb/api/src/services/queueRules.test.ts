@@ -38,6 +38,7 @@ test("late appointments become walk-ins after the grace period", () => {
 
 test("service eligibility matches staff lanes", () => {
   assert.equal(staffCanPerformCategory("hairstylist", "Hair"), true);
+  assert.equal(staffCanPerformCategory("hairstylist", "Stylist"), true);
   assert.equal(staffCanPerformCategory("nail_technician", "Manicure"), true);
   assert.equal(staffCanPerformCategory("hairstylist", "Pedicure"), false);
 });

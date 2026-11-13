@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useAuth } from "@/shared/context/AuthContext";
+import { useAuth } from "@/shared/context/useAuth";
 import { useSalonBranding } from "@/shared/context/SalonBrandingContext";
 import { PasswordVisibilityButton } from "@/shared/components/PasswordVisibilityButton";
 import { SalonLogoImage } from "@/shared/components/SalonLogoImage";
@@ -47,7 +47,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="login-page flex min-h-screen items-center justify-center bg-[var(--app-canvas)] p-4 sm:p-6">
+    <div className="login-page flex min-h-screen items-center justify-center bg-[var(--app-canvas)] p-2.5 sm:p-4">
       <style>{`
         input:-webkit-autofill,
         input:-webkit-autofill:hover,
@@ -59,8 +59,8 @@ export function LoginPage() {
         }
       `}</style>
 
-      <div className="login-card flex w-full max-w-[420px] flex-col items-center justify-start gap-1 overflow-hidden rounded-[24px] bg-white px-4 pb-6 pt-4 shadow-[0_16px_28px_rgba(0,0,0,0.12)] sm:gap-1 sm:px-6 sm:pb-8 sm:pt-6 lg:min-h-[496px] lg:max-w-[846px] lg:flex-row lg:justify-between lg:gap-0 lg:p-10">
-        <div className="login-logo-panel flex h-32 w-full max-w-[240px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] bg-white p-4 lg:aspect-square lg:h-auto lg:max-w-[417px] lg:p-5 lg:w-[55%]">
+      <div className="login-card flex w-full max-w-[420px] flex-col items-center justify-start gap-1 overflow-hidden rounded-[24px] bg-white px-2 pb-3 pt-2 shadow-[0_16px_28px_rgba(0,0,0,0.12)] sm:gap-1 sm:px-3 sm:pb-4 sm:pt-3 lg:min-h-[496px] lg:max-w-[846px] lg:flex-row lg:justify-between lg:gap-0 lg:p-5">
+        <div className="login-logo-panel flex h-28 w-full max-w-[240px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] bg-white p-2 lg:aspect-square lg:h-auto lg:max-w-[417px] lg:p-4 lg:w-[55%]">
           <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-[18px] bg-white p-2 lg:p-[30px]">
             {logoDataUrl ? (
               <SalonLogoImage src={logoDataUrl} alt="Salon logo" className="h-full w-full rounded-2xl object-contain" />
@@ -74,12 +74,12 @@ export function LoginPage() {
         </div>
 
         <div className="flex w-full items-center justify-center lg:w-[45%]">
-          <div className="w-full max-w-[205px]">
-            <h1 className="mb-4 text-center font-display text-lg font-semibold text-ink lg:mb-6">
+          <div className="w-full max-w-[240px]">
+            <h1 className="mb-2 text-center font-display text-lg font-semibold text-ink lg:mb-3">
               {location.pathname === "/lyn-co/login" ? "Lyn & Co sign in" : "Sign in"}
             </h1>
 
-            <form onSubmit={handleSubmit} noValidate autoComplete="off" className="space-y-3 lg:space-y-4">
+            <form onSubmit={handleSubmit} noValidate autoComplete="off" className="space-y-2 lg:space-y-2.5">
               <div className={`login-field-control relative h-12 rounded-[10px] border bg-white transition focus-within:border-[#777] focus-within:ring-1 focus-within:ring-[#999]/20 ${fieldErrors.username || credentialsError ? "has-error border-danger" : "border-[#d6d6d6]"}`}>
                 <input
                   id="username"
@@ -134,7 +134,7 @@ export function LoginPage() {
                 type="submit"
                 disabled={isSubmitting}
                 aria-busy={isSubmitting}
-                className="!mt-5 mb-2 block h-11 w-full appearance-none rounded-[9px] bg-[#252525] py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-[#111] disabled:cursor-wait disabled:opacity-50"
+                className="keep-black-submit !mt-4 mb-1 block h-11 w-full appearance-none rounded-[9px] bg-[#252525] py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-[#111] disabled:cursor-wait disabled:opacity-50"
               >
                 <span aria-live="polite">{isSubmitting ? "Signing in..." : "Sign in"}</span>
               </button>

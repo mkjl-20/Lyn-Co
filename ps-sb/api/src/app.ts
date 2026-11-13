@@ -98,6 +98,12 @@ export function createApp() {
         supabase.from("queue_sms_outbox")
           .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "queue_sms_outbox", migration: "20261101090000_queue_availability_and_sms_outbox.sql", error })),
+        supabase.from("queue_parties")
+          .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
+          .then(({ error }) => ({ name: "queue_parties", migration: "20261107100000_party_queue_support.sql", error })),
+        supabase.from("queue_entries")
+          .select("party_id", { head: true }).limit(0).abortSignal(healthProbeSignal)
+          .then(({ error }) => ({ name: "queue_entries.party_id", migration: "20261107100000_party_queue_support.sql", error })),
         supabase.from("pos_transaction_adjustments")
           .select("id", { head: true }).limit(0).abortSignal(healthProbeSignal)
           .then(({ error }) => ({ name: "pos_transaction_adjustments", migration: "20261027130000_add_pos_adjustments.sql", error })),
@@ -111,8 +117,21 @@ export function createApp() {
       const missingMigrations = new Set<string>();
       const unavailableSchema = new Set<string>();
       const missingSchemaCodes = new Set(["PGRST204", "PGRST205", "42703", "42P01"]);
+      const partySchemaChecks = schemaChecks.filter(({ name }) =>
+        name === "queue_parties" || name === "queue_entries.party_id"
+      );
+      const requiredSchemaChecks = schemaChecks.filter(({ name }) =>
+        name !== "queue_parties" && name !== "queue_entries.party_id"
+      );
+      const partyCheckInAvailable = partySchemaChecks.every(({ error }) => !error);
 
-      for (const check of schemaChecks) {
+      for (const check of partySchemaChecks) {
+        if (check.error && !missingSchemaCodes.has(check.error.code ?? "")) {
+          console.error(`Health check schema probe failed for ${check.name}:`, check.error.message);
+        }
+      }
+
+      for (const check of requiredSchemaChecks) {
         if (!check.error) continue;
         if (missingSchemaCodes.has(check.error.code ?? "")) {
           if (check.migration) missingMigrations.add(check.migration);
@@ -143,6 +162,12 @@ export function createApp() {
         status: "healthy",
         timestamp: new Date().toISOString(),
         dependencies: { database: "healthy", schema: "ready" },
+        features: {
+          partyCheckIn: {
+            status: partyCheckInAvailable ? "available" : "unavailable",
+            ...(!partyCheckInAvailable ? { requiredMigration: "20261107100000_party_queue_support.sql" } : {}),
+          },
+        },
         layers: {
           presentation: {
             tier: "Client Tier",

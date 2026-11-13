@@ -6,13 +6,14 @@ interface AppErrorBoundaryProps {
 
 interface AppErrorBoundaryState {
   hasError: boolean;
+  errorMessage: string | null;
 }
 
 export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
-  state: AppErrorBoundaryState = { hasError: false };
+  state: AppErrorBoundaryState = { hasError: false, errorMessage: null };
 
-  static getDerivedStateFromError(): AppErrorBoundaryState {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { hasError: true, errorMessage: error.message };
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
@@ -29,6 +30,16 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
             <p className="mt-2 text-sm leading-6 text-[var(--app-ink-muted)]">
               Something unexpected interrupted the page. Your account data has not been changed by this screen.
             </p>
+            {this.state.errorMessage && (
+              <details className="mt-4 text-left">
+                <summary className="cursor-pointer text-xs font-semibold text-[var(--app-ink-muted)]">
+                  Technical details
+                </summary>
+                <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[var(--app-canvas)] p-3 text-xs text-[var(--app-ink-muted)]">
+                  {this.state.errorMessage}
+                </pre>
+              </details>
+            )}
             <button
               type="button"
               onClick={() => window.location.reload()}

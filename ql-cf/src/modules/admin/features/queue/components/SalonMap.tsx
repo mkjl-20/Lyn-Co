@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
+import { mapServiceSeatsToLayout, SEAT_LAYOUT, type SeatArea, type SeatSpot } from './salonMapLayout';
 
-export type SeatArea = 'hair' | 'nail' | 'shampoo';
-export type SeatStatus = 'free' | 'busy' | 'reserved' | 'unconfigured';
+export type { SeatArea } from './salonMapLayout';
+
+export type SeatStatus = 'free' | 'busy' | 'reserved' | 'unavailable' | 'unconfigured';
 
 export interface MapSeat {
   /** Must match a key in SEAT_LAYOUT: hair-1…hair-7, nail-1…nail-3, shampoo-1…shampoo-2 */
   id: string;
+  resourceId?: string;
   label?: string;
   status: SeatStatus;
+  manualStatus?: 'available' | 'reserved' | 'unavailable';
+  queueReserved?: boolean;
   /** Customer currently using the seat */
   occupant?: string;
   /** Optional extra info shown on double-click */
@@ -27,73 +32,7 @@ export interface ServiceSeatMapOption {
   category: string;
   status: Exclude<SeatStatus, 'unconfigured'>;
   isEligible: boolean;
-}
-
-interface SeatSpot {
-  area: SeatArea;
-  label: string;
-  x: number;
-  y: number;
-  /** Rotation in degrees so the backrest sits against the wall (0 = backrest on top) */
-  rot: number;
-}
-
-/**
- * Positions are taken from the hand-drawn floor plan (2000×1500 sketch).
- * 7 hair chairs (5 along the slanted wall + 2 at the make-up/face side),
- * 3 nail stations, 2 shampoo beds.
- */
-export const SEAT_LAYOUT: Record<string, SeatSpot> = {
-  'hair-7': { area: 'hair', label: 'Hair chair 7', x: 373, y: 880, rot: -47 },
-  'hair-6': { area: 'hair', label: 'Hair chair 6', x: 461, y: 782, rot: -47 },
-  'hair-5': { area: 'hair', label: 'Hair chair 5', x: 552, y: 685, rot: -47 },
-  'hair-4': { area: 'hair', label: 'Hair chair 4', x: 634, y: 592, rot: -47 },
-  'hair-3': { area: 'hair', label: 'Hair chair 3', x: 710, y: 505, rot: -47 },
-  'hair-2': { area: 'hair', label: 'Hair chair 2', x: 820, y: 783, rot: 90 },
-  'hair-1': { area: 'hair', label: 'Hair chair 1', x: 818, y: 917, rot: 90 },
-  'nail-1': { area: 'nail', label: 'Nail seat 1', x: 1259, y: 691, rot: 90 },
-  'nail-2': { area: 'nail', label: 'Nail seat 2', x: 1255, y: 846, rot: 90 },
-  'nail-3': { area: 'nail', label: 'Nail seat 3', x: 1252, y: 985, rot: 90 },
-  'shampoo-1': { area: 'shampoo', label: 'Shampoo bed 1', x: 1365, y: 235, rot: 0 },
-  'shampoo-2': { area: 'shampoo', label: 'Shampoo bed 2', x: 1365, y: 360, rot: 0 },
-};
-
-function areaForServiceSeat(category: string, label: string): SeatArea | null {
-  const value = `${category} ${label}`.toLowerCase();
-  if (/hair|stylist|barber|color|make[\s_-]?up|brows?|eyebrows?|lash/.test(value)) return 'hair';
-  if (/nail|mani|pedi|foot/.test(value)) return 'nail';
-  if (/shampoo|wash/.test(value)) return 'shampoo';
-  return null;
-}
-
-export function mapServiceSeatsToLayout<T extends Pick<ServiceSeatMapOption, 'category' | 'label'>>(
-  seats: readonly T[],
-): Map<string, T> {
-  const mapped = new Map<string, T>();
-  const usedLayoutIds = new Set<string>();
-
-  for (const seat of seats) {
-    const area = areaForServiceSeat(seat.category, seat.label);
-    if (!area) continue;
-
-    const areaLayoutIds = Object.entries(SEAT_LAYOUT)
-      .filter(([, spot]) => spot.area === area)
-      .map(([id]) => id);
-    const numberMatch = seat.label.match(/(\d+)\s*$/);
-    const numberedLayoutId = numberMatch ? `${area}-${numberMatch[1]}` : null;
-    const layoutId = numberedLayoutId
-      && areaLayoutIds.includes(numberedLayoutId)
-      && !usedLayoutIds.has(numberedLayoutId)
-      ? numberedLayoutId
-      : areaLayoutIds.find((id) => !usedLayoutIds.has(id));
-
-    if (layoutId) {
-      usedLayoutIds.add(layoutId);
-      mapped.set(layoutId, seat);
-    }
-  }
-
-  return mapped;
+  sharedWithVisit?: boolean;
 }
 
 const AREAS: { key: SeatArea | 'desk' | 'lounge'; name: string; tone: string }[] = [
@@ -108,6 +47,7 @@ const STATUS_LABEL: Record<SeatStatus, string> = {
   free: 'Available',
   busy: 'In use',
   reserved: 'Reserved',
+  unavailable: 'Unavailable',
   unconfigured: 'Not configured',
 };
 
@@ -210,6 +150,51 @@ function ShampooBed({
   );
 }
 
+function SalonFixtures() {
+  const stylingMirrorPositions = [
+    [303, 815],
+    [393, 719],
+    [483, 622],
+    [568, 531],
+    [646, 447],
+  ];
+
+  return (
+    <g aria-label="Salon workstations and furnishings">
+      {stylingMirrorPositions.map(([x, y]) => (
+        <g key={`${x}-${y}`} className="sm-mirror" transform={`translate(${x} ${y}) rotate(-47)`}>
+          <title>Hair styling mirror</title>
+          <rect x={-34} y={-13} width={68} height={26} rx={4} />
+          <line x1={-25} y1={0} x2={25} y2={0} />
+        </g>
+      ))}
+      {[770, 930].map((y) => (
+        <g key={y} className="sm-mirror" transform={`translate(887 ${y})`}>
+          <title>Hair styling mirror mounted on wall</title>
+          <rect x={-9} y={-35} width={18} height={70} rx={4} />
+          <line x1={0} y1={-28} x2={0} y2={28} />
+        </g>
+      ))}
+      {[691, 846, 985].map((y) => (
+        <g key={y} className="sm-worktable" transform={`translate(1200 ${y})`}>
+          <title>Nail workstation table</title>
+          <rect x={-18} y={-34} width={36} height={68} rx={5} />
+          <line x1={-10} y1={-22} x2={10} y2={-22} />
+          <circle cx={0} cy={18} r={5} />
+        </g>
+      ))}
+      {[235, 360].map((y) => (
+        <g key={y} className="sm-basin" transform={`translate(1454 ${y})`}>
+          <title>Shampoo basin</title>
+          <ellipse rx={25} ry={19} />
+          <ellipse className="sm-basin-inner" rx={13} ry={8} />
+          <circle className="sm-basin-drain" cy={2} r={2.5} />
+        </g>
+      ))}
+    </g>
+  );
+}
+
 export function ServiceSeatMapPicker({
   seats,
   selectedSeatId,
@@ -222,9 +207,8 @@ export function ServiceSeatMapPicker({
   disabled?: boolean;
 }) {
   const seatsByLayout = mapServiceSeatsToLayout(seats);
-  const mappedSeatIds = new Set([...seatsByLayout.values()].map((seat) => seat.id));
-  const unmappedAvailableSeats = seats.filter((seat) =>
-    seat.isEligible && seat.status === 'free' && !mappedSeatIds.has(seat.id)
+  const selectableSeats = seats.filter((seat) =>
+    seat.isEligible && (seat.status === 'free' || seat.sharedWithVisit)
   );
   const selectedSeat = seats.find((seat) => seat.id === selectedSeatId);
 
@@ -239,7 +223,11 @@ export function ServiceSeatMapPicker({
         <rect className="sm-zone sm-zone-desk" x={895} y={430} width={240} height={275} />
         <rect className="sm-zone sm-zone-shampoo" x={1290} y={150} width={210} height={390} />
         <polygon className="sm-wall" points="195,930 690,400 1095,290 1220,150 1490,153 1495,540 1333,533 1335,1185 1190,1183 1100,1181 203,1165" fill="none" />
-        <g fill="#ededef" stroke="#c9c9ce" strokeWidth="3" aria-label="Customer lounge seating area">
+        <rect className="sm-wall-solid" x={880} y={700} width={14} height={30} rx={3} />
+        <rect className="sm-wall-solid" x={880} y={810} width={14} height={80} rx={3} />
+        <rect className="sm-wall-solid" x={880} y={970} width={14} height={35} rx={3} />
+        <SalonFixtures />
+        <g className="sm-lounge-seats" aria-label="Customer lounge seating area">
           <rect x={220} y={975} width={86} height={118} rx={14} />
           <rect x={345} y={1070} width={150} height={80} rx={14} />
           <rect x={550} y={1070} width={150} height={80} rx={14} />
@@ -255,11 +243,17 @@ export function ServiceSeatMapPicker({
           const seat: MapSeat = {
             id: layoutId,
             label: option?.label ?? spot.label,
-            status: option?.status ?? 'unconfigured',
+            status: option
+              ? option.isEligible || option.status !== 'free'
+                ? option.status
+                : 'unconfigured'
+              : 'unconfigured',
           };
-          const interactive = Boolean(option?.isEligible && option.status === 'free' && !disabled);
+          const interactive = Boolean(option?.isEligible
+            && (option.status === 'free' || option.sharedWithVisit)
+            && !disabled);
           const ariaLabel = option
-            ? `${option.label}: ${STATUS_LABEL[option.status]}${option.isEligible ? '' : ', not compatible with this service'}`
+            ? `${option.label}: ${option.sharedWithVisit ? 'already assigned to this visit' : option.isEligible ? STATUS_LABEL[option.status] : 'not compatible with this service'}`
             : `${spot.label}: Not configured`;
           const select = () => {
             if (interactive && option) onSelect(option.id);
@@ -282,36 +276,41 @@ export function ServiceSeatMapPicker({
       </svg>
       <div className="sm-legend" aria-label="Map legend">
         <span><i className="sm-dot sm-dot-free" /> Available (compatible chairs selectable)</span>
+        <span><i className="sm-dot sm-dot-reserved" /> Reserved for this visit (shareable)</span>
         <span><i className="sm-dot sm-dot-busy" /> In use</span>
         <span><i className="sm-dot sm-dot-reserved" /> Reserved</span>
         <span><i className="sm-dot sm-dot-unconfigured" /> Not configured</span>
+        <span><i className="sm-dot sm-dot-unconfigured" /> Not compatible with this service</span>
       </div>
-      {selectedSeat && <p className="sm-hint" aria-live="polite">Selected: {selectedSeat.label}</p>}
-      {unmappedAvailableSeats.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-2" aria-label="Available seats not placed on the salon map">
-          {unmappedAvailableSeats.map((seat) => (
+      {selectableSeats.length > 0 && (
+        <div className="mt-2 flex flex-wrap justify-center gap-2" aria-label="Choose an available service chair">
+          {selectableSeats.map((seat) => (
             <button
               key={seat.id}
               type="button"
               disabled={disabled}
               onClick={() => onSelect(seat.id)}
               aria-pressed={selectedSeatId === seat.id}
-              className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-50 ${
+              className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors disabled:opacity-50 ${
                 selectedSeatId === seat.id
                   ? 'border-sage-deep bg-sage-light text-sage-deep'
                   : 'border-mist bg-white text-ink/70 hover:border-sage'
               }`}
             >
-              {seat.label}
+              {seat.label}{seat.sharedWithVisit ? ' · Same visit' : ''}
             </button>
           ))}
         </div>
       )}
+      {Object.keys(SEAT_LAYOUT).some((layoutId) => !seatsByLayout.has(layoutId)) && (
+        <p className="sm-hint">Chairs marked “Not configured” must be added and activated in the Salon Map before they can be selected.</p>
+      )}
+      {selectedSeat && <p className="sm-hint" aria-live="polite">Selected: {selectedSeat.label}</p>}
     </div>
   );
 }
 
-export const DEMO_SEATS: MapSeat[] = [
+const DEMO_SEATS: MapSeat[] = [
   { id: 'hair-7', status: 'busy', occupant: 'Mika R.', service: 'Haircut (Women)', staff: 'Joy', ticket: 19, phone: '09171234567', since: '2:10 PM', endsAt: '3:00 PM' },
   { id: 'hair-6', status: 'free' },
   { id: 'hair-5', status: 'reserved', occupant: 'Ana L.', service: 'Hair color', ticket: 21, phone: '09175557788', since: '3:00 PM' },
@@ -358,7 +357,8 @@ const SALON_MAP_CSS = `
 .sm-desk-wall { fill: var(--ink); }
 .sm-desk { fill: #fff; stroke: #8a8a90; stroke-width: 3; }
 .sm-desk-div { stroke: #c9c9ce; stroke-width: 3; }
-.sm-lounge { fill: #ededef; stroke: #c9c9ce; stroke-width: 3; }
+.sm-lounge { fill: #3f3f46; stroke: #18181b; stroke-width: 3; }
+.sm-lounge-seats rect { fill: #3f3f46; stroke: #18181b; stroke-width: 3; }
 .sm-door { fill: none; stroke: #8a8a90; stroke-width: 3; stroke-dasharray: 8 6; }
 .sm-door-gap { stroke: #fbfbfb; stroke-width: 12; }
 .sm-tiny { font-weight: 600; font-size: 26px; fill: var(--muted); }
@@ -380,26 +380,26 @@ const SALON_MAP_CSS = `
 .sm-seat:hover .sm-seat-halo { fill: rgba(0,0,0,.06); }
 .sm-seat-num { font-weight: 700; font-size: 34px; pointer-events: none; }
 .sm-cushion, .sm-back { stroke-width: 3.5; }
-.sm-free .sm-cushion { fill: var(--ok-bg); stroke: var(--ok); }
-.sm-free .sm-back { fill: var(--ok); stroke: var(--ok); }
-.sm-free .sm-seat-num { fill: var(--ok); }
-.sm-free .sm-bed-body { fill: var(--ok-bg); stroke: var(--ok); }
-.sm-free .sm-bed-pillow { fill: #c5e5d1; }
-.sm-busy .sm-cushion { fill: var(--ink); stroke: var(--ink); }
-.sm-busy .sm-back { fill: #000; stroke: #000; }
+.sm-free .sm-cushion { fill: #374151; stroke: #1f2937; }
+.sm-free .sm-back { fill: #1f2937; stroke: #111827; }
+.sm-free .sm-seat-num { fill: #fff; }
+.sm-free .sm-bed-body { fill: #374151; stroke: #1f2937; }
+.sm-free .sm-bed-pillow { fill: #1f2937; }
+.sm-busy .sm-cushion { fill: #18181b; stroke: #09090b; }
+.sm-busy .sm-back { fill: #09090b; stroke: #000; }
 .sm-busy .sm-seat-num { fill: #fff; }
-.sm-busy .sm-bed-body { fill: var(--ink); stroke: var(--ink); }
-.sm-busy .sm-bed-pillow { fill: #000; }
-.sm-reserved .sm-cushion { fill: var(--warn-bg); stroke: #c58a00; }
-.sm-reserved .sm-back { fill: #c58a00; stroke: #c58a00; }
-.sm-reserved .sm-seat-num { fill: var(--warn); }
-.sm-reserved .sm-bed-body { fill: var(--warn-bg); stroke: #c58a00; }
-.sm-reserved .sm-bed-pillow { fill: #c58a00; }
+.sm-busy .sm-bed-body { fill: #18181b; stroke: #09090b; }
+.sm-busy .sm-bed-pillow { fill: #09090b; }
+.sm-reserved .sm-cushion { fill: #1e3a5f; stroke: #0f2742; }
+.sm-reserved .sm-back { fill: #0f2742; stroke: #0b1c30; }
+.sm-reserved .sm-seat-num { fill: #fff; }
+.sm-reserved .sm-bed-body { fill: #1e3a5f; stroke: #0f2742; }
+.sm-reserved .sm-bed-pillow { fill: #0f2742; }
 .sm-legend { display: flex; gap: 18px; justify-content: center; padding: 10px 0 2px; font-size: .85rem; color: var(--muted); }
 .sm-dot { display: inline-block; width: 12px; height: 12px; border-radius: 4px; margin-right: 6px; vertical-align: -1px; border: 2px solid; }
-.sm-dot-free { background: var(--ok-bg); border-color: var(--ok); }
-.sm-dot-busy { background: var(--ink); border-color: var(--ink); }
-.sm-dot-reserved { background: var(--warn-bg); border-color: #c58a00; }
+.sm-dot-free { background: #374151; border-color: #1f2937; }
+.sm-dot-busy { background: #18181b; border-color: #09090b; }
+.sm-dot-reserved { background: #1e3a5f; border-color: #0f2742; }
 .sm-side { border: 1px solid var(--line); border-radius: 16px; background: #fff; padding: 18px; }
 .sm-side-title { margin: 0 0 10px; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
 .sm-side-title:not(:first-child) { margin-top: 22px; }
@@ -489,15 +489,44 @@ const SALON_MAP_CSS = `
 .sm-seat { transition: opacity .16s ease; }
 .sm-seat:hover { opacity: .84; }
 .sm-unconfigured .sm-cushion,
-.sm-unconfigured .sm-back,
-.sm-unconfigured .sm-bed-body { fill: #f1f0f4; stroke: #8d8998; stroke-dasharray: 6 5; }
-.sm-unconfigured .sm-seat-num { fill: #777280; }
-.sm-dot-unconfigured { background: #f1f0f4; border-color: #8d8998; }
-.sm-badge-unconfigured { background: #f1f0f4; color: #625e6b; }
+.sm-unconfigured .sm-back { fill: #52525b; stroke: #a1a1aa; stroke-dasharray: 6 5; }
+.sm-unconfigured .sm-bed-body { fill: #52525b; stroke: #a1a1aa; stroke-dasharray: 6 5; }
+.sm-unconfigured .sm-seat-num { fill: #fff; }
+.sm-dot-unconfigured { background: #52525b; border-color: #a1a1aa; }
+.sm-badge-unconfigured { background: #52525b; color: #fff; }
+.sm-unavailable .sm-cushion, .sm-unavailable .sm-bed-body { fill: #52525b; stroke: #3f3f46; }
+.sm-unavailable .sm-back, .sm-unavailable .sm-bed-pillow { fill: #3f3f46; stroke: #27272a; }
+.sm-unavailable .sm-seat-num { fill: #fff; }
+.sm-dot-unavailable { background: #52525b; border-color: #3f3f46; }
+.sm-badge-unavailable { background: #52525b; color: #fff; }
+.sm-mirror rect { fill: #dbeafe; stroke: #475569; stroke-width: 3; }
+.sm-mirror line { stroke: #fff; stroke-width: 2; }
+.sm-worktable rect { fill: #d6d3d1; stroke: #57534e; stroke-width: 3; }
+.sm-worktable line { stroke: #78716c; stroke-width: 2; }
+.sm-worktable circle { fill: #44403c; }
+.sm-basin ellipse { fill: #dbeafe; stroke: #475569; stroke-width: 3; }
+.sm-basin .sm-basin-inner { fill: #93c5fd; stroke: #475569; stroke-width: 2; }
+.sm-basin .sm-basin-drain { fill: #334155; }
+.sm-fixture-key { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; border: 2px solid #475569; border-radius: 3px; background: #dbeafe; }
+.sm-fixture-key-table { border-color: #57534e; background: #d6d3d1; }
 .sm-area-note { line-height: 1.45; }
+.sm-seat-picker { width: 100%; min-width: 0; }
+.sm-seat-picker .sm-svg { width: 100%; max-width: 520px; max-height: 40dvh; margin: 0 auto; object-fit: contain; }
+.sm-seat-picker .sm-legend { width: 100%; min-width: 0; flex-wrap: wrap; align-items: flex-start; gap: 8px 14px; }
+.sm-seat-picker .sm-legend span { display: inline-flex; flex: 1 1 150px; min-width: 0; align-items: flex-start; }
+.sm-seat-picker .sm-dot { flex: 0 0 12px; margin-top: 3px; }
+.sm-unconfigured .sm-cushion,
+.sm-unconfigured .sm-back { fill: #71717a; stroke: #3f3f46; stroke-dasharray: none; }
+.sm-unconfigured .sm-seat-num { fill: #fff; }
 `;
 
-export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) {
+export default function SalonMap({
+  seats = DEMO_SEATS,
+  onSetStatus,
+}: {
+  seats?: MapSeat[];
+  onSetStatus?: (seatId: string, status: 'available' | 'reserved' | 'unavailable') => void;
+}) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   useEffect(() => {
@@ -512,11 +541,12 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
 
   const stats = (area: SeatArea) => {
     const ids = Object.keys(SEAT_LAYOUT).filter((id) => SEAT_LAYOUT[id].area === area);
-    const busy = ids.filter((id) => seatFor(id).status === 'busy').length;
+      const busy = ids.filter((id) => seatFor(id).status === 'busy').length;
     const free = ids.filter((id) => seatFor(id).status === 'free').length;
     const reserved = ids.filter((id) => seatFor(id).status === 'reserved').length;
+    const unavailable = ids.filter((id) => seatFor(id).status === 'unavailable').length;
     const unconfigured = ids.filter((id) => seatFor(id).status === 'unconfigured').length;
-    return { busy, free, reserved, unconfigured };
+    return { busy, free, reserved, unavailable, unconfigured };
   };
 
   const selected = selectedId ? SEAT_LAYOUT[selectedId] : null;
@@ -554,7 +584,9 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
             fill="none"
           />
           {/* Wall behind the two make-up / face hair chairs */}
-          <rect className="sm-wall-solid" x={880} y={700} width={14} height={305} rx={3} />
+          <rect className="sm-wall-solid" x={880} y={700} width={14} height={30} rx={3} />
+          <rect className="sm-wall-solid" x={880} y={810} width={14} height={80} rx={3} />
+          <rect className="sm-wall-solid" x={880} y={970} width={14} height={35} rx={3} />
 
           {/* Front desk */}
           <g transform="translate(1015 582) scale(0.78) translate(-1015 -560)">
@@ -563,7 +595,7 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
             <line className="sm-desk-div" x1={1015} y1={578} x2={1015} y2={660} />
           </g>
 
-          <g className="sm-lounge">
+          <g className="sm-lounge-seats">
             <rect x={220} y={975} width={86} height={118} rx={14} />
             <rect x={345} y={1070} width={150} height={80} rx={14} />
             <rect x={550} y={1070} width={150} height={80} rx={14} />
@@ -576,6 +608,8 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
           <text className="sm-tiny" x={1145} y={1220} textAnchor="middle">
             Entrance
           </text>
+
+          <SalonFixtures />
 
           {/* Shampoo beds (display only) */}
           {/* Area labels */}
@@ -610,6 +644,7 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
           <span><i className="sm-dot sm-dot-free" /> Free</span>
           <span><i className="sm-dot sm-dot-busy" /> In use</span>
           <span><i className="sm-dot sm-dot-reserved" /> Reserved</span>
+          <span><i className="sm-dot sm-dot-unavailable" /> Unavailable</span>
           <span><i className="sm-dot sm-dot-unconfigured" /> Not configured</span>
         </div>
         <div className="sm-legend sm-legend-areas" aria-label="Area colours">
@@ -618,6 +653,11 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
           <span><i className="sm-sw sm-sw-desk" /> Front desk</span>
           <span><i className="sm-sw sm-sw-shampoo" /> Shampoo area</span>
           <span><i className="sm-sw sm-sw-lounge" /> Customer lounge</span>
+        </div>
+        <div className="sm-legend sm-legend-areas" aria-label="Salon fixtures">
+          <span><i className="sm-fixture-key" /> Styling mirrors</span>
+          <span><i className="sm-fixture-key sm-fixture-key-table" /> Nail tables</span>
+          <span><i className="sm-fixture-key" /> Shampoo basins</span>
         </div>
         <p className="sm-hint">Click a seat to select it · double-click for full details</p>
       </div>
@@ -645,7 +685,7 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
               <li key={a.key} className={`sm-area sm-area-${a.tone}`}>
                 <span className="sm-area-name">{a.name}</span>
                 <span className="sm-area-note">
-                  {s.busy} in use · {s.free} free{s.reserved ? ` · ${s.reserved} reserved` : ''}{s.unconfigured ? ` · ${s.unconfigured} not configured` : ''}
+                  {s.busy} in use · {s.free} available{s.reserved ? ` · ${s.reserved} reserved` : ''}{s.unavailable ? ` · ${s.unavailable} unavailable` : ''}{s.unconfigured ? ` · ${s.unconfigured} not configured` : ''}
                 </span>
               </li>
             );
@@ -683,6 +723,12 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
             </div>
             {selectedSeat.status === 'free' ? (
               <p className="sm-muted">Nobody is using this seat right now.</p>
+            ) : selectedSeat.manualStatus === 'reserved' && !selectedSeat.queueReserved ? (
+              <p className="sm-muted">This seat is being held manually and will not be assigned to a new queue service.</p>
+            ) : selectedSeat.queueReserved ? (
+              <p className="sm-muted">This seat is reserved for an active queue service.</p>
+            ) : selectedSeat.status === 'unavailable' ? (
+              <p className="sm-muted">This seat is marked unavailable and cannot be assigned.</p>
             ) : selectedSeat.status === 'unconfigured' ? (
               <p className="sm-muted">This position is shown on the floor plan, but no active service seat is configured for it yet.</p>
             ) : (
@@ -694,6 +740,36 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
                 <dt>Staff</dt>
                 <dd>{selectedSeat.staff ?? '—'}</dd>
               </dl>
+            )}
+            {onSetStatus && selectedSeat.resourceId && selectedSeat.status !== 'unconfigured' && (
+              <div className="mt-3">
+                <p className="mb-1.5 text-xs font-semibold text-ink/65">Set manual seat status</p>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {([
+                    ['available', 'Available'],
+                    ['reserved', 'Reserved'],
+                    ['unavailable', 'Unavailable'],
+                  ] as const).map(([status, label]) => (
+                    <button
+                      key={status}
+                      type="button"
+                      disabled={selectedSeat.status === 'busy' || selectedSeat.queueReserved || selectedSeat.manualStatus === status}
+                      aria-pressed={selectedSeat.manualStatus === status}
+                      onClick={() => onSetStatus(selectedSeat.resourceId!, status)}
+                      className={`min-h-9 rounded-md border px-1.5 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-45 ${
+                        selectedSeat.manualStatus === status
+                          ? 'border-neutral-900 bg-neutral-900 text-white'
+                          : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {(selectedSeat.status === 'busy' || selectedSeat.queueReserved) && (
+                  <p className="mt-1.5 text-[10px] text-ink/50">Release the active queue assignment before changing this seat.</p>
+                )}
+              </div>
             )}
           </div>
         ) : (
@@ -725,6 +801,8 @@ export default function SalonMap({ seats = DEMO_SEATS }: { seats?: MapSeat[] }) 
               </div>
               {st.status === 'free' ? (
                 <p className="sm-muted">Nobody is using this seat. It is ready for the next customer.</p>
+              ) : st.status === 'unavailable' ? (
+                <p className="sm-muted">This seat is marked unavailable and cannot be assigned.</p>
               ) : st.status === 'unconfigured' ? (
                 <p className="sm-muted">This position is shown on the floor plan, but no active service seat is configured for it yet.</p>
               ) : (

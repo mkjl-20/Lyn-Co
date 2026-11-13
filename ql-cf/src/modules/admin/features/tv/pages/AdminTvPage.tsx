@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "@/shared/lib/apiClient";
-import { BackButton } from "@/shared/components/BackButton";
 import { DeviceHeartbeatReporter } from "@/shared/features/deviceMonitoring/DeviceHeartbeatReporter";
 import { formatTicketNumber } from "@/shared/lib/ticketNumber";
 import { subscribeToQueueChanges } from "../../queue/services/queueAdminService";
@@ -10,6 +9,7 @@ interface NowServingData {
     id: string;
     label: string;
     category: string;
+    staffName: string | null;
     status: "available" | "waiting" | "called" | "in_service";
     current: StationQueueCustomer | null;
     nextUp: StationQueueCustomer[];
@@ -21,8 +21,11 @@ interface NowServingData {
 interface StationQueueCustomer {
   id: string;
   ticketNumber: number;
+  customerName: string;
+  assignedStaffName: string | null;
   serviceSeatLabel: string | null;
   serviceName: string;
+  remainingMinutes?: number;
 }
 
 export function AdminTvPage() {
@@ -114,125 +117,71 @@ export function AdminTvPage() {
   }
 
   return (
-    <main className="tv-display pastel-pink-gradient-page h-full min-h-0 overflow-hidden p-3 text-ink sm:p-5">
+    <main className="tv-display tv-station-board tv-board h-full min-h-0 overflow-hidden p-4 text-ink sm:p-7">
       <DeviceHeartbeatReporter
         kind="tv"
         deviceId="tv-main"
         status={errorMessage ? "needs_attention" : "online"}
       />
-      <div className="mx-auto flex h-full min-h-0 max-w-7xl flex-col">
-        <header className="flex items-center justify-between border-b border-white/15 pb-5">
-          <div className="flex items-center gap-3">
-            <BackButton to="/" label="Back to booking" className="text-white/75 hover:text-white focus-visible:outline-sage-light" />
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sage-light">Lyn &amp; Co</p>
-              <h1 className="mt-1 font-display text-2xl sm:text-3xl">Station queues</h1>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button type="button" onClick={toggleSound} className="min-h-11 rounded-lg border border-white/20 px-3 text-xs font-semibold text-white/80 hover:bg-white/10">
-              {soundEnabled ? "Turn sound off" : "Enable alert sound"}
-            </button>
-            <p className="text-sm text-white/60">Live · instant updates with 2 sec sync</p>
-          </div>
+      <div className="mx-auto flex h-full min-h-0 max-w-[1600px] flex-col">
+        <header className="tv-board-controls flex shrink-0 justify-end">
+          <button
+            type="button"
+            onClick={toggleSound}
+            className="tv-board-sound min-h-10 rounded-lg px-3 text-xs font-semibold sm:px-4 sm:text-sm"
+          >
+            <span className={`tv-board-sound-indicator ${soundEnabled ? "is-on" : ""}`} aria-hidden="true" />
+            {soundEnabled ? "Sound on" : "Enable sound"}
+          </button>
         </header>
 
         {errorMessage && (
-          <p role="alert" className="mt-5 rounded-lg bg-clay/20 px-4 py-3 text-sm text-white">
-            Live queue unavailable: {errorMessage}
+          <p role="alert" className="tv-board-error mt-4 rounded-lg px-4 py-3 text-sm">
+            Queue temporarily unavailable. {errorMessage}
           </p>
         )}
         {alertMessage && <p className="sr-only" aria-live="assertive">Now serving updated: {alertMessage}</p>}
 
-        <section className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-white/10 bg-white/5 p-4 sm:mt-5 sm:p-6">
-          <h2 className="font-display text-xl">Live by station</h2>
+        <section className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden">
           {!display ? (
-            <p className="mt-5 text-sm text-white/55">Loading stations…</p>
-          ) : display.stationBoard.length === 0 ? (
-            <p className="mt-5 text-sm text-white/55">No active stations.</p>
+            <p className="tv-board-empty mt-5 text-lg">Loading live queue…</p>
+          ) : display.stationBoard.every((station) => !station.current && station.nextUp.length === 0) ? (
+            <p className="tv-board-empty mt-5 text-lg">No customers are currently being served or waiting.</p>
           ) : (
-            <ul className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {display.stationBoard.map((station) => (
-                <li key={station.id} className={`rounded-xl border border-white/10 bg-black/10 p-4 sm:p-5 ${highlightedStations.has(station.id) ? "animate-pulse ring-2 ring-gold-light" : ""}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-semibold">{station.label}</p>
-                      <p className="text-xs text-white/45">{station.category}</p>
-                    </div>
-                    <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${
-                      station.status === "in_service"
-                        ? "bg-sage-deep text-white"
-                        : station.status === "waiting" || station.status === "called"
-                          ? "bg-gold-light text-ink"
-                          : "bg-white/10 text-white/60"
-                    }`}>
-                      {station.status === "in_service"
-                        ? "In service"
-                        : station.status === "called"
-                          ? "Called"
-                          : station.status === "waiting"
-                          ? "Waiting"
-                          : "Available"}
-                    </span>
-                  </div>
-                    <p className="mt-2 text-xs text-white/55">Estimated wait: ~{station.estimatedWaitMinutes} min</p>
-                    <div className="mt-4 rounded-lg bg-white/5 p-3">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-sage-light">Currently being served</p>
-                      {station.current ? (
-                        <>
-                          <p className="mt-1 text-lg font-semibold">
-                            {formatTicketNumber(station.current.ticketNumber)}
-                          </p>
-                          <p className="text-xs text-white/55">{station.current.serviceName}</p>
-                          {station.current.serviceSeatLabel && (
-                            <p className="mt-1 text-xs font-semibold text-white/75">
-                              Service seat {station.current.serviceSeatLabel}
-                            </p>
-                          )}
-                        </>
-                      ) : (
-                        <p className="mt-1 text-sm text-white/45">No customer currently being served.</p>
-                      )}
-                    </div>
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-white/50">Next in line</p>
-                        <p className="rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-semibold text-sage-light" aria-live="polite">
-                          {station.waitingCount} waiting
-                        </p>
+            <div className="tv-queue-groups">
+              {display.stationBoard
+                .filter((station) => station.current || station.nextUp.length > 0)
+                .map((station) => (
+                  <section key={station.id} className={`tv-queue-group ${highlightedStations.has(station.id) ? "is-highlighted" : ""}`}>
+                    <h2 className="tv-queue-group-title">
+                      {station.label}
+                      <span>{station.category}</span>
+                    </h2>
+                    {station.current && (
+                      <div className="tv-queue-serving">
+                        <p className="tv-queue-label">IN SERVICE</p>
+                        <strong className="tv-queue-ticket">{formatTicketNumber(station.current.ticketNumber)}</strong>
+                        <span className="tv-queue-customer">{station.current.customerName.split(/\s+/)[0]}</span>
+                        {station.current.assignedStaffName && <span className="tv-queue-detail">With {station.current.assignedStaffName}</span>}
                       </div>
-                      {station.nextUp.length > 0 ? (
-                        <ol className="mt-2 space-y-2">
+                    )}
+                    {station.nextUp.length > 0 && (
+                      <div className="tv-queue-waiting">
+                        <h3>WAITING</h3>
+                        <ol>
                           {station.nextUp.map((customer, index) => (
-                            <li key={customer.id} className="rounded-lg bg-black/10 px-3 py-2.5">
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <p className="text-xs font-semibold text-white/85">
-                                    {index === 0 ? "Next" : `${index + 1}.`} {formatTicketNumber(customer.ticketNumber)}
-                                  </p>
-                                  <p className="truncate text-[10px] text-white/45">{customer.serviceName}</p>
-                                </div>
-                                {customer.serviceSeatLabel && (
-                                  <p className="shrink-0 text-[10px] font-semibold text-sage-light">
-                                    Seat {customer.serviceSeatLabel}
-                                  </p>
-                                )}
-                              </div>
+                            <li key={customer.id}>
+                              <span className="tv-queue-position">{index + 1}</span>
+                              <strong>{formatTicketNumber(customer.ticketNumber)}</strong>
+                              <span>{customer.customerName.split(/\s+/)[0]}</span>
                             </li>
                           ))}
                         </ol>
-                      ) : (
-                        <p className="mt-2 text-xs text-white/40">No one waiting for this station.</p>
-                      )}
-                      {station.waitingCount > station.nextUp.length && (
-                        <p className="mt-2 text-right text-[10px] text-white/40">
-                          +{station.waitingCount - station.nextUp.length} more in line
-                        </p>
-                      )}
-                    </div>
-                </li>
-              ))}
-            </ul>
+                      </div>
+                    )}
+                  </section>
+                ))}
+            </div>
           )}
         </section>
       </div>

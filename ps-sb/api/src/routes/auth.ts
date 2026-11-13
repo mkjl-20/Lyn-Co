@@ -40,13 +40,13 @@ authRouter.post("/login", loginRateLimit, async (req, res) => {
   try {
     const supabase = getSupabase();
     let canonicalUsername = username;
-    let accountRole: string | null = null;
 
     if (!username.includes("@")) {
-      const { data: profiles } = await supabase
+      const { data: profiles, error: profileLookupError } = await getSupabaseAdmin()
         .from("profiles")
         .select("username, account_role, is_active, must_change_password")
         .eq("is_active", true);
+      if (profileLookupError) throw profileLookupError;
       const normalized = username.replace(/(\D)0+(\d)/, "$1$2");
       const profile = (profiles ?? []).find((candidate) => {
         const candidateUsername = String(candidate.username).toLowerCase();
@@ -54,7 +54,6 @@ authRouter.post("/login", loginRateLimit, async (req, res) => {
       });
       if (profile) {
         canonicalUsername = String(profile.username).toLowerCase();
-        accountRole = profile.account_role;
       }
     }
 
@@ -79,32 +78,39 @@ authRouter.post("/login", loginRateLimit, async (req, res) => {
       return;
     }
 
-    const { data: profileData } = await supabase
+    const { data: profileData, error: profileError } = await getSupabaseAdmin()
       .from("profiles")
       .select("id, username, full_name, account_role, staff_role, is_active, must_change_password")
       .eq("id", data.user.id)
       .maybeSingle();
+    if (profileError) throw profileError;
+    if (!profileData
+      || !profileData.is_active
+      || (profileData.account_role !== "staff" && profileData.account_role !== "admin")) {
+      res.status(401).json({ success: false, message: "Invalid username or password." });
+      return;
+    }
 
-    accountRole = profileData?.account_role ?? data.user.user_metadata?.account_role ?? accountRole;
+    const accountRole = profileData.account_role;
     await writeAuditLog({
       actorId: data.user.id,
       action: "auth.login",
       entityType: "session",
       entityId: data.user.id,
-      summary: `${profileData?.full_name ?? canonicalUsername} signed in.`,
-      metadata: { username: profileData?.username ?? canonicalUsername, accountRole },
+      summary: `${profileData.full_name ?? canonicalUsername} signed in.`,
+      metadata: { username: profileData.username, accountRole },
     });
     res.json({
       success: true,
       accountRole,
       profile: {
         id: data.user.id,
-        username: profileData?.username ?? data.user.user_metadata?.username ?? canonicalUsername,
-        full_name: profileData?.full_name ?? data.user.user_metadata?.full_name ?? canonicalUsername,
+        username: profileData.username,
+        full_name: profileData.full_name ?? canonicalUsername,
         account_role: accountRole,
-        staff_role: profileData?.staff_role ?? data.user.user_metadata?.staff_role ?? null,
-        is_active: profileData?.is_active ?? true,
-        must_change_password: profileData?.must_change_password ?? false,
+        staff_role: profileData.staff_role,
+        is_active: profileData.is_active,
+        must_change_password: profileData.must_change_password,
       },
       session: data.session,
     });
@@ -160,13 +166,19 @@ authRouter.post("/logout", async (req, res) => {
       .maybeSingle();
     if (error) throw error;
 
+    if (!profile) {
+      console.warn(`Logout audit skipped: no staff profile exists for authenticated user ${user.id}.`);
+      res.json({ success: true, auditRecorded: false });
+      return;
+    }
+
     await writeAuditLog({
       actorId: user.id,
       action: "auth.logout",
       entityType: "session",
       entityId: user.id,
-      summary: `${profile?.full_name ?? profile?.username ?? user.id} signed out.`,
-      metadata: { username: profile?.username ?? null },
+      summary: `${profile.full_name ?? profile.username} signed out.`,
+      metadata: { username: profile.username },
     });
     res.json({ success: true });
   } catch (error) {

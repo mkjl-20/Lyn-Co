@@ -30,14 +30,14 @@ export function LogoutConfirmationDialog({ onCancel, onConfirm }: LogoutConfirma
         aria-modal="true"
         aria-label="Confirm sign out"
         aria-describedby="logout-dialog-description"
-        className="w-full max-w-[245px] overflow-hidden rounded-[10px] bg-white text-center shadow-xl"
+        className="w-full max-w-xs overflow-hidden rounded-xl border border-ink/10 bg-white text-center shadow-xl"
       >
-        <div className="px-5 pb-4 pt-3">
-          <p id="logout-dialog-description" className="mt-3 text-xs text-ink">
+        <div className="px-5 pb-5 pt-4">
+          <p id="logout-dialog-description" className="mt-2 text-base font-medium leading-6 text-ink">
             Are you sure you want to sign out?
           </p>
           {errorMessage && (
-            <p role="alert" className="mt-2 text-xs text-clay">
+            <p role="alert" className="mt-2 text-sm leading-5 text-clay">
               {errorMessage}
             </p>
           )}
@@ -47,7 +47,7 @@ export function LogoutConfirmationDialog({ onCancel, onConfirm }: LogoutConfirma
             type="button"
             disabled={isConfirming}
             onClick={onCancel}
-            className="min-h-10 flex-1 border-r border-mist bg-white text-sm text-ink hover:bg-neutral-50 disabled:bg-white disabled:text-neutral-400"
+            className="min-h-12 flex-1 bg-white px-3 text-base font-semibold text-black transition-colors hover:bg-neutral-100 disabled:text-neutral-400"
           >
             Cancel
           </button>
@@ -55,7 +55,7 @@ export function LogoutConfirmationDialog({ onCancel, onConfirm }: LogoutConfirma
             type="button"
             disabled={isConfirming}
             onClick={() => void handleConfirm()}
-            className="min-h-10 flex-1 bg-white text-sm font-semibold text-red-600 hover:bg-red-50 disabled:bg-white disabled:text-red-300"
+            className="min-h-12 flex-1 border-l border-mist bg-white px-3 text-base font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:text-red-300"
           >
             {isConfirming ? "Signing out…" : "Sign out"}
           </button>

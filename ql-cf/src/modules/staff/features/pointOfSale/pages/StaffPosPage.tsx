@@ -1,6 +1,6 @@
 import { Navigate } from "react-router-dom";
 import { AdminBusinessModules } from "../../../../admin/features/businessModules/pages/AdminBusinessModules";
-import { useAuth } from "../../../../../shared/context/AuthContext";
+import { useAuth } from "../../../../../shared/context/useAuth";
 import { BackButton } from "@/shared/components/BackButton";
 
 export default function StaffPosPage() {
@@ -16,7 +16,7 @@ export default function StaffPosPage() {
         <BackButton to="/lyn-co/staff" label="Back to staff dashboard" />
         <h1 className="font-display text-xl font-semibold">Front desk POS</h1>
       </header>
-      <AdminBusinessModules module="pos-transactions" />
+      <AdminBusinessModules module="pos-transactions" showPaymentHistory={false} />
     </div>
   );
 }

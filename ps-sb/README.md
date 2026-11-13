@@ -120,11 +120,46 @@ Available migrations, in timestamp order:
 32. `supabase/migrations/20261104040000_reserve_service_seat_on_call.sql`
 33. `supabase/migrations/20261104050000_queue_seat_lookup_indexes.sql`
 34. `supabase/migrations/20261104100000_repair_forecast_hourly_demand.sql`
+35. `supabase/migrations/20261107100000_party_queue_support.sql`
+36. `supabase/migrations/20261108110000_queue_reference_photos.sql`
+37. `supabase/migrations/20261108120000_enable_queue_realtime.sql`
+38. `supabase/migrations/20261108130000_manual_service_seat_status.sql`
+39. `supabase/migrations/20261110090000_grant_authenticated_service_seat_start.sql`
+40. `supabase/migrations/20261110130000_configure_hair_seats_5_to_7.sql`
+41. `supabase/migrations/20261110140000_staff_station_coverage_grants.sql`
+42. `supabase/migrations/20261111100000_profile_avatars.sql`
+43. `supabase/migrations/20261111150000_reset_operational_history.sql`
+44. `supabase/migrations/20261112023000_clear_customer_tags_on_reset.sql`
+45. `supabase/migrations/20261112110000_fix_customer_reset_account_role_enum.sql`
+46. `supabase/migrations/20261112120000_clear_service_durations_and_drop_waiting_seats.sql`
+
+The operational-reset migrations are destructive deployment tooling. Back up
+the target database first and review the exact reset function before running
+`SELECT public.reset_lynq_operational_history();`. The latest reset clears
+queue, service, payment, forecast/model, customer, promotion, and staff
+operational data, and clears catalog service durations. It preserves admin
+accounts, service names/prices, configured `customer_service_seats`, and
+service packages. The latest migration also drops `public.waiting_seats` with
+no `CASCADE`; it will stop if that table has dependent objects. Deploy the API
+and frontend updates with the migration so services with unset durations are
+handled safely.
 
 The latest queue migrations must be applied before deploying their matching
 API changes. They add shared API rate-limit storage, the service-completion SMS
 milestone, transactional service-seat reservation when staff call a customer,
-and indexes for active seat reservations and near-turn queue lookups.
+indexes for active seat reservations and near-turn queue lookups, linked party
+check-in, private queue reference photos, queue/seat Realtime publication, and
+manual service-seat statuses. The API health check verifies the party table and
+queue-entry link; if they are missing, party joins require
+`20261107100000_party_queue_support.sql` to be reviewed and applied to the
+existing database.
+
+Apply the November 8 queue-photo, Realtime, and seat-status migrations to the
+existing Supabase project before deploying their matching API and web changes.
+The Realtime migration publishes queue entries, queue services, staff
+availability, and customer service seats so staff/admin views can update across
+devices. Manual seat status supports available, reserved, and unavailable;
+manually reserved or unavailable seats are excluded from new queue assignments.
 
 #### Queue/admin staff workflow deployment
 
@@ -255,8 +290,12 @@ Configure a supported SMS provider in Supabase Auth and enable phone
 confirmations before launch; the app uses Supabase SMS OTP for number
 verification and password recovery/change. Queue milestone SMS uses the
 separate API `SMS_GATEWAY_URL` and `SMS_API_KEY` settings and does not provide
-account verification codes. Existing customer accounts can continue signing in
-with their email while transitioning; staff/admin authentication is unchanged.
+account verification codes. For iProgSMS, set `SMS_GATEWAY_URL` to
+`https://www.iprogsms.com/api/v1/sms_messages`; the API sends a JSON body with
+`api_token`, `phone_number`, and `message`. Supabase Auth SMS is configured
+separately through the `send-auth-sms` Edge Function and Supabase Send SMS
+Hook. Existing customer accounts can continue signing in with their email
+while transitioning; staff/admin authentication is unchanged.
 
 Configure these API runtime variables in the API host:
 

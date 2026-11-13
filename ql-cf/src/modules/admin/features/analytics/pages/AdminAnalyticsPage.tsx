@@ -7,7 +7,6 @@ import {
   type HybridForecast,
   type MonthlyForecast,
   type ForecastAccuracy,
-  type ServiceDurationSummary,
   type StaffingRecommendation,
 } from "../services/forecastService";
 import { AdminPageLayout } from "../../../components/AdminPageLayout";
@@ -18,26 +17,31 @@ import { PaginationControls } from "@/shared/components/PaginationControls";
 import { paginateItems } from "@/shared/lib/pagination";
 import { ForecastDatasetImportPanel } from "../components/ForecastDatasetImportPanel";
 import { ForecastEventsPanel } from "../components/ForecastEventsPanel";
+import { useFeedback } from "@/shared/components/FeedbackContext";
 
-type AnalyticsTab = "overview" | "demand" | "events" | "staffing" | "service-duration" | "accuracy" | "training";
+type AnalyticsTab = "overview" | "demand" | "events" | "staffing" | "accuracy" | "training";
 
 const analyticsTabs: { id: AnalyticsTab; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "demand", label: "Demand forecasting" },
-  { id: "events", label: "Seasonal planning" },
-  { id: "staffing", label: "Staffing recommendations" },
-  { id: "service-duration", label: "Service duration" },
+  { id: "demand", label: "Demand forecast" },
+  { id: "events", label: "Seasonal events" },
+  { id: "staffing", label: "Staffing" },
   { id: "accuracy", label: "Accuracy" },
-  { id: "training", label: "Model training" },
+  { id: "training", label: "Model data" },
+];
+
+const analyticsGroups: { label: string; tabs: AnalyticsTab[] }[] = [
+  { label: "Analytics", tabs: ["overview", "accuracy"] },
+  { label: "Forecast", tabs: ["demand", "events", "staffing", "training"] },
 ];
 
 export function AdminAnalyticsPage() {
+  const { confirm } = useFeedback();
   const [stats, setStats] = useState<AnalyticsSnapshot | null>(null);
   const [forecast, setForecast] = useState<HybridForecast | null>(null);
   const [staffingRecommendations, setStaffingRecommendations] = useState<StaffingRecommendation[]>([]);
   const [monthlyForecast, setMonthlyForecast] = useState<MonthlyForecast | null>(null);
   const [averageServiceMinutes, setAverageServiceMinutes] = useState(30);
-  const [serviceDurationReport, setServiceDurationReport] = useState<ServiceDurationSummary[]>([]);
   const [forecastAccuracy, setForecastAccuracy] = useState<ForecastAccuracy | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -53,9 +57,8 @@ export function AdminAnalyticsPage() {
   const [downloadState, setDownloadState] = useState<DownloadFeedbackState>({ status: "idle" });
   const [staffingPage, setStaffingPage] = useState(1);
   const [monthlyForecastPage, setMonthlyForecastPage] = useState(1);
-  const [serviceDurationPage, setServiceDurationPage] = useState(1);
   const [activeTab, setActiveTab] = useState<AnalyticsTab>("overview");
-  const activePage = analyticsTabs.findIndex((tab) => tab.id === activeTab) + 1;
+  const activeTabLabel = analyticsTabs.find((tab) => tab.id === activeTab)?.label ?? "Overview";
   const loadAnalytics = useCallback(async () => {
     setIsLoading(true);
     setErrorMessage(null);
@@ -67,7 +70,6 @@ export function AdminAnalyticsPage() {
       setStaffingRecommendations(data.staffingRecommendations);
       setMonthlyForecast(data.monthlyForecast);
       setAverageServiceMinutes(data.averageServiceMinutes);
-      setServiceDurationReport(data.serviceDurationReport);
       setForecastAccuracy(data.forecastAccuracy);
       setReportRange(data.reportRange);
       setEventCalendarAvailable(data.eventAdjustment.available);
@@ -87,7 +89,6 @@ export function AdminAnalyticsPage() {
   const maxHybrid = Math.max(1, ...(forecast?.hourly.map((h) => h.hybrid) ?? [1]));
   const paginatedStaffing = paginateItems(staffingRecommendations, staffingPage, 5);
   const paginatedMonthlyForecast = paginateItems(monthlyForecast?.forecast ?? [], monthlyForecastPage);
-  const paginatedServiceDuration = paginateItems(serviceDurationReport, serviceDurationPage, 5);
   const staffingByHour = new Map(staffingRecommendations.map((item) => [item.hour, item.recommendedStaff]));
   const demandTrend = forecast?.hourly.map((hour) => ({
     label: `${hour.hour}:00`,
@@ -102,11 +103,15 @@ export function AdminAnalyticsPage() {
     minimumDataPoints: 4,
   }) : null;
 
-  function handleExportCsv() {
+  async function handleExportCsv() {
     if (!forecast || !stats) {
       return;
     }
-    if (!window.confirm("Prepare and download the forecast report as a CSV file?")) return;
+    if (!await confirm({
+      title: "Export forecast report",
+      message: "Prepare and download the forecast report as a CSV file?",
+      confirmLabel: "Download CSV",
+    })) return;
     setDownloadState({ status: "running", message: "Preparing forecast report…" });
 
     const rows = forecast.hourly.map((hour) => ({
@@ -224,22 +229,35 @@ export function AdminAnalyticsPage() {
           </div>
         ) : null}
 
-        <div className="shrink-0 rounded-lg border border-neutral-200 bg-white">
-          <div className="border-b border-neutral-200 px-3 py-2 text-xs font-semibold text-neutral-700">
-            {analyticsTabs[activePage - 1].label}
+        <nav aria-label="Analytics and forecast sections" className="shrink-0 overflow-x-auto rounded-lg border border-neutral-200 bg-white p-2">
+          <div className="flex min-w-max gap-3">
+            {analyticsGroups.map((group) => (
+              <div key={group.label} className="flex items-center gap-1 border-r border-neutral-200 pr-3 last:border-0 last:pr-0">
+                <span className="mr-1 px-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">{group.label}</span>
+                {group.tabs.map((tabId) => {
+                  const tab = analyticsTabs.find((item) => item.id === tabId)!;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      aria-current={activeTab === tab.id ? "page" : undefined}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`min-h-9 rounded-md px-3 text-xs font-semibold transition ${
+                        activeTab === tab.id
+                          ? "bg-black text-white"
+                          : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </div>
-          <PaginationControls
-            page={activePage}
-            totalPages={analyticsTabs.length}
-            firstItem={activePage}
-            lastItem={activePage}
-            totalItems={analyticsTabs.length}
-            onPageChange={(page) => setActiveTab(analyticsTabs[page - 1].id)}
-            label="Analytics sections"
-          />
-        </div>
+        </nav>
 
-        <div id={`analytics-page-${activeTab}`} role="region" aria-label={analyticsTabs[activePage - 1].label} className="min-h-0 flex-1 overflow-hidden pr-1">
+        <div id={`analytics-page-${activeTab}`} role="region" aria-label={activeTabLabel} className="min-h-0 flex-1 overflow-y-auto pr-1">
           {isLoading && (
             <DashboardSkeletonGrid count={2} variant="panel" label="Loading forecast charts" className="xl:grid-cols-2" />
           )}
@@ -325,7 +343,7 @@ export function AdminAnalyticsPage() {
         </section>}
 
         {activeTab === "demand" && monthlyForecast && (
-          <section className="h-full overflow-hidden rounded-xl border border-neutral-200 bg-white p-3 shadow-sm">
+          <section className="min-h-full rounded-xl border border-neutral-200 bg-white p-3 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="font-display text-base font-semibold text-[var(--color-ink)]">Peak-month forecast</h2>
@@ -378,7 +396,7 @@ export function AdminAnalyticsPage() {
           </section>
         )}
 
-        {activeTab === "staffing" && <section className="h-full overflow-hidden rounded-xl border border-neutral-200 bg-white p-3 shadow-sm">
+        {activeTab === "staffing" && <section className="min-h-full rounded-xl border border-neutral-200 bg-white p-3 shadow-sm">
             <div>
               <h2 className="font-display text-base font-semibold text-[var(--color-ink)]">Staffing recommendations</h2>
               <p className="mt-1 text-xs text-[var(--app-ink-muted)]">Based on hourly demand and an average service duration of {averageServiceMinutes} minutes.</p>
@@ -413,44 +431,6 @@ export function AdminAnalyticsPage() {
             </div>
         </section>}
 
-        {activeTab === "service-duration" && <section className="h-full overflow-hidden rounded-xl border border-neutral-200 bg-white p-3 shadow-sm">
-          <div>
-            <h2 className="font-display text-base font-semibold text-[var(--color-ink)]">Service duration: estimated vs actual</h2>
-            <p className="mt-1 text-xs text-[var(--app-ink-muted)]">Completed services in the selected reporting period, measured from persisted start and completion timestamps.</p>
-            {serviceDurationReport.length > 0 ? (
-              <div className="mt-3 overflow-hidden">
-                <table className="admin-responsive-table w-full table-fixed text-left text-xs">
-                  <thead className="text-[var(--app-ink-muted)]"><tr><th className="py-2">Service</th><th>Samples</th><th>Estimate</th><th>Actual</th><th>Δ actual−est.</th><th>MAE</th></tr></thead>
-                  <tbody>{paginatedServiceDuration.items.map((service) => (
-                    <tr key={service.serviceId} className="border-t border-neutral-200">
-                      <td data-label="Service" className="py-2">{service.serviceName}</td>
-                      <td data-label="Samples">{service.sampleCount}</td>
-                      <td data-label="Estimate">{service.averageEstimatedMinutes} min</td>
-                      <td data-label="Actual">{service.averageActualMinutes} min</td>
-                      <td data-label="Δ actual−est.">{service.averageDifferenceMinutes > 0 ? "+" : ""}{service.averageDifferenceMinutes} min</td>
-                      <td data-label="MAE">{service.meanAbsoluteErrorMinutes} min</td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-                <PaginationControls
-                  page={paginatedServiceDuration.page}
-                  totalPages={paginatedServiceDuration.totalPages}
-                  firstItem={paginatedServiceDuration.firstItem}
-                  lastItem={paginatedServiceDuration.lastItem}
-                  totalItems={serviceDurationReport.length}
-                  onPageChange={setServiceDurationPage}
-                  label="Service duration report"
-                />
-              </div>
-            ) : (
-              <p className="mt-4 rounded-lg bg-[var(--app-surface-soft)] p-3 text-sm text-[var(--app-ink-muted)]">
-                No completed services in this period have both a valid estimate and recorded start/completion times.
-              </p>
-            )}
-          </div>
-
-        </section>}
-
         {activeTab === "accuracy" && <section className="rounded-xl border border-neutral-200 bg-white p-3 shadow-sm">
           <div>
             <h2 className="font-display text-base font-semibold text-[var(--color-ink)]">Wait and no-show forecast accuracy</h2>
@@ -465,22 +445,13 @@ export function AdminAnalyticsPage() {
                 {forecastAccuracy.available && (
                   <p className="mt-2 text-xs text-[var(--app-ink-muted)]">{forecastAccuracy.message}</p>
                 )}
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <ScenarioMetric
+                <div className="mt-4 grid gap-3">
+                  <AnalyticsMetric
                     label="Observed no-show rate"
                     value={forecastAccuracy.observedOutcomes.noShowRate === null
                       ? "No data"
                       : `${forecastAccuracy.observedOutcomes.noShowRate}%`}
                     detail={`${forecastAccuracy.observedOutcomes.noShowCount} no-shows / ${forecastAccuracy.observedOutcomes.completedCount + forecastAccuracy.observedOutcomes.noShowCount} completed or no-show visits`}
-                  />
-                  <ScenarioMetric
-                    label="Observed average wait"
-                    value={forecastAccuracy.observedOutcomes.averageActualWaitMinutes === null
-                      ? "No data"
-                      : `${forecastAccuracy.observedOutcomes.averageActualWaitMinutes} min`}
-                    detail={forecastAccuracy.observedOutcomes.actualWaitSampleCount > 0
-                      ? `${forecastAccuracy.observedOutcomes.actualWaitSampleCount} completed visits with valid wait times`
-                      : "No reliable per-visit actual wait samples are available"}
                   />
                 </div>
                 {forecastAccuracy.available && (
@@ -501,7 +472,7 @@ export function AdminAnalyticsPage() {
   );
 }
 
-function ScenarioMetric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+function AnalyticsMetric({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
     <div className="rounded-lg border border-neutral-200 bg-white p-3">
       <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-ink-muted)]">{label}</p>

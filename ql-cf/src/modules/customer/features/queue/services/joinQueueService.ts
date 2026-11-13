@@ -7,7 +7,7 @@ export interface CatalogService {
   description: string | null;
   price: number;
   price_type: "fixed" | "starting";
-  duration_minutes: number;
+  duration_minutes: number | null;
   is_visible: boolean;
   is_available: boolean;
   display_order: number;
@@ -97,6 +97,7 @@ export async function joinQueue(payload: {
   customerName: string;
   contactNumber: string;
   additionalNotes: string;
+  referencePhotoDataUrl?: string;
   preferredStaffId: string;
   serviceIds: string[];
   packageId: string | null;
@@ -168,7 +169,7 @@ export async function fetchQueueStatus(entryId: string) {
         totalAmount: number;
         paymentMethod: string;
         paidAt: string;
-        services: { name: string; quantity: number }[];
+        services: { name: string; quantity: number; price: number }[];
       } | null;
       receiptUnavailable?: boolean;
       assigned_service_seats: {
