@@ -55,8 +55,8 @@ export function AccountProfilePage({
   }
 
   return (
-    <main className="pastel-pink-gradient-page min-h-full px-4 py-5 text-ink sm:px-6 sm:py-8">
-      <div className="mx-auto grid max-w-5xl items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
+    <main className="pastel-pink-gradient-page flex h-full min-h-0 items-center justify-center overflow-hidden px-3 py-3 text-ink sm:px-5 sm:py-4">
+      <div className="mx-auto grid max-h-full w-full max-w-5xl items-center gap-3 overflow-y-auto lg:grid-cols-[17rem_minmax(0,1fr)] lg:gap-4">
         <section className="overflow-hidden rounded-2xl border border-mist bg-white shadow-sm">
           <div className="h-20 bg-gradient-to-r from-sage-light via-porcelain to-sage-light" aria-hidden="true" />
           <div className="px-5 pb-5">
@@ -121,7 +121,7 @@ export function AccountProfilePage({
                 <button
                   type="submit"
                   disabled={isSaving || !hasNameChanged}
-                  className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-sage-deep px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                  className="dashboard-primary-action inline-flex min-h-10 items-center gap-2 rounded-lg px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   <Save size={15} aria-hidden="true" />
                   {isSaving ? "Saving…" : "Save changes"}

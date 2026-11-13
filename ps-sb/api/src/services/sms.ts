@@ -47,18 +47,6 @@ export async function sendQueueSms(input: {
   const salonName = (await getSalonSettings()).salonName;
   const body = MESSAGES[input.milestone](input.customerName, salonName, input.extra);
 
-  const supabase = getSupabaseAdmin();
-  const { data: notification, error } = await supabase.from("notifications").insert({
-    channel: "sms",
-    recipient: input.phone,
-    milestone: input.milestone,
-    body,
-    status: config.smsApiKey && config.smsGatewayUrl ? "queued" : "logged",
-  }).select("id").maybeSingle();
-  if (error) {
-    console.warn("notifications insert skipped:", error.message);
-  }
-
   if (!config.smsApiKey || !config.smsGatewayUrl) {
     console.info("[sms:stub]", { to: input.phone, milestone: input.milestone, body });
     return { sent: false, reason: "gateway_not_configured" as const };
@@ -68,21 +56,33 @@ export async function sendQueueSms(input: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${config.smsApiKey}`,
     },
-    body: JSON.stringify({ to: input.phone, message: body }),
+    body: JSON.stringify({
+      api_token: config.smsApiKey,
+      phone_number: input.phone,
+      message: body,
+    }),
   });
 
+  const responseBody = await response.text();
   if (!response.ok) {
-    throw new Error(`SMS gateway error (${response.status})`);
+    throw new Error(`SMS gateway error (${response.status}): ${responseBody.slice(0, 300)}`);
   }
 
-  if (notification?.id) {
-    const { error: updateError } = await supabase
-      .from("notifications")
-      .update({ status: "sent" })
-      .eq("id", notification.id);
-    if (updateError) console.error("Queue notification status update failed:", updateError.message);
+  let gatewayResult: unknown;
+  try {
+    gatewayResult = JSON.parse(responseBody);
+  } catch {
+    throw new Error(`SMS gateway returned an invalid response (${response.status}).`);
+  }
+  if (!gatewayResult || typeof gatewayResult !== "object") {
+    throw new Error("SMS gateway returned an unexpected response.");
+  }
+
+  const result = gatewayResult as Record<string, unknown>;
+  if (result.status !== 200 && result.status !== "success") {
+    const detail = typeof result.message === "string" ? `: ${result.message}` : "";
+    throw new Error(`SMS gateway rejected the message${detail}`);
   }
 
   return { sent: true as const };

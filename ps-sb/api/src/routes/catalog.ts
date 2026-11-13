@@ -13,10 +13,21 @@ catalogRouter.get("/theme", async (_req, res) => {
       themeColor: settings.themeColor,
       queueUrl: settings.queueUrl,
       logoDataUrl: settings.logoDataUrl,
+      bannerDataUrl: settings.bannerDataUrl,
     });
   } catch (error) {
     console.error("Public theme load failed:", error);
     res.status(500).json({ success: false, message: "Unable to load the salon theme." });
+  }
+});
+
+catalogRouter.get("/hours", async (_req, res) => {
+  try {
+    const { openingTime, closingTime } = await getSalonSettings();
+    res.json({ success: true, openingTime, closingTime });
+  } catch (error) {
+    console.error("Public salon hours load failed:", error);
+    res.status(500).json({ success: false, message: "Unable to load salon business hours." });
   }
 });
 

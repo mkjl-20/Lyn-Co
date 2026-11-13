@@ -2,6 +2,10 @@ import { getSupabase, getSupabaseAdmin } from "../lib/supabase.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { serviceLane } from "./queueRules.js";
 import { loadUnavailableStaffIds } from "./staffAvailability.js";
+import { aggregateHourlyDemand } from "./forecastAnalytics.js";
+import { isMlrModel, predictForecastWait, type MlrModel } from "./forecastTraining.js";
+
+type ForecastSource = "supabase_rpc" | "application_fallback" | "mlr_model";
 
 export interface HourlyForecast {
   hour: number;
@@ -12,7 +16,7 @@ export interface HourlyForecast {
 
 export interface HybridForecast {
   method: "hybrid_ma_linear_regression";
-  source: "supabase_rpc" | "application_fallback";
+  source: ForecastSource;
   hourly: HourlyForecast[];
   slope: number;
   intercept: number;
@@ -39,6 +43,42 @@ function round(value: number, digits = 2) {
   return Math.round(value * factor) / factor;
 }
 
+let lastMlrWarning: string | null = null;
+
+function warnMlrFallback(message: string) {
+  if (lastMlrWarning === message) return;
+  lastMlrWarning = message;
+  console.warn(message);
+}
+
+async function loadActiveMlrModel(): Promise<{ model: MlrModel } | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("mlr_models")
+    .select("model, mae_test, baseline_mae")
+    .eq("active", true)
+    .maybeSingle();
+  if (error) {
+    if (error.code === "PGRST205" || error.code === "42P01") {
+      warnMlrFallback("MLR wait-time model is unavailable. Apply the forecast training migration to enable it.");
+      return null;
+    }
+    throw new Error(`Unable to load the active MLR wait-time model: ${error.message}`);
+  }
+  if (!data) return null;
+  if (!isMlrModel(data.model)) {
+    warnMlrFallback("The active MLR wait-time model has an invalid feature schema; using the existing wait estimate.");
+    return null;
+  }
+  const mae = Number(data.mae_test);
+  const baselineMae = Number(data.baseline_mae);
+  if (!Number.isFinite(mae) || !Number.isFinite(baselineMae) || mae >= baselineMae) {
+    warnMlrFallback("The active MLR model did not beat its holdout baseline; using the existing wait estimate.");
+    return null;
+  }
+  lastMlrWarning = null;
+  return { model: data.model };
+}
+
 export function linearRegression(xs: number[], ys: number[]) {
   const n = xs.length;
   if (n < 2) return { slope: 0, intercept: ys[0] ?? 0 };
@@ -54,8 +94,9 @@ export function linearRegression(xs: number[], ys: number[]) {
 }
 
 export function movingAverage(values: number[], window: number) {
+  const safeWindow = Math.max(1, Math.floor(window));
   return values.map((_, index) => {
-    const start = Math.max(0, index - window + 1);
+    const start = Math.max(0, index - safeWindow + 1);
     const slice = values.slice(start, index + 1);
     return slice.reduce((a, b) => a + b, 0) / slice.length;
   });
@@ -102,35 +143,15 @@ async function computeLocalForecast(
   if (waitingRes.error) throw new Error(waitingRes.error.message);
   if (staffRes.error) throw new Error(staffRes.error.message);
 
-  const dailyHourCounts: Record<number, number[]> = {};
-  const bucketCounts = new Map<string, number>();
-
-  for (const row of historyRes.data ?? []) {
-    const created = new Date(row.created_at);
-    const hour = created.getHours();
-    const day = created.toISOString().slice(0, 10);
-    const key = `${day}-${hour}`;
-    bucketCounts.set(key, (bucketCounts.get(key) ?? 0) + 1);
-    dailyHourCounts[hour] ??= [];
-  }
-
-  const xs: number[] = [];
-  const ys: number[] = [];
-  for (const [key, count] of bucketCounts.entries()) {
-    const hour = Number(key.split("-").at(-1));
-    xs.push(hour);
-    ys.push(count);
-    dailyHourCounts[hour] ??= [];
-    dailyHourCounts[hour].push(count);
-  }
-
-  const { slope, intercept } = linearRegression(xs, ys);
+  const hourlyDemand = aggregateHourlyDemand(historyRes.data ?? [], new Date());
+  const { slope, intercept } = linearRegression(
+    hourlyDemand.map(({ hour }) => hour),
+    hourlyDemand.map(({ average }) => average),
+  );
 
   const hourly = Array.from({ length: 11 }, (_, i) => {
     const hour = 9 + i;
-    const series = dailyHourCounts[hour] ?? [0];
-    const windowed = movingAverage(series, 7);
-    const ma = windowed.at(-1) ?? 0;
+    const ma = hourlyDemand[hour]?.movingAverage ?? 0;
     const lr = intercept + slope * hour;
     const hybrid = 0.6 * ma + 0.4 * Math.max(0, lr);
     return {
@@ -190,8 +211,11 @@ export async function computeHybridForecast(
 
 export async function estimateEntryWait(entryId: string, crowdThreshold: number) {
   const supabase = getSupabase();
-  const availability = await loadUnavailableStaffIds(getSupabaseAdmin());
-  const rpc = availability.staffIds.size === 0
+  const [activeModel, availability] = await Promise.all([
+    loadActiveMlrModel(),
+    loadUnavailableStaffIds(getSupabaseAdmin()),
+  ]);
+  const rpc = !activeModel && availability.staffIds.size === 0
     ? await supabase.rpc("estimate_entry_wait", { p_entry_id: entryId })
     : null;
   if (rpc && !rpc.error && rpc.data != null) {
@@ -203,7 +227,7 @@ export async function estimateEntryWait(entryId: string, crowdThreshold: number)
 
   const { data: target, error: targetError } = await supabase
     .from("queue_entries")
-    .select("id, status, position")
+    .select("id, status, position, arrival_type, preferred_staff_id")
     .eq("id", entryId)
     .maybeSingle();
 
@@ -215,14 +239,14 @@ export async function estimateEntryWait(entryId: string, crowdThreshold: number)
 
   // NOTE: staff_role_catalog is no longer queried here.
   // Role -> lane mapping now comes from the fixed STAFF_ROLE_LANES map above.
-  const [entriesRes, serviceItemsRes, historyRes, staffRes, stationsRes] = await Promise.all([
+  const [entriesRes, serviceItemsRes, historyRes, staffRes, stationsRes, arrivalRateRes] = await Promise.all([
     supabase
       .from("queue_entries")
-      .select("id, status, position")
+      .select("id, status, position, created_at, arrival_type, preferred_staff_id")
       .in("status", ["waiting", "in_service"]),
     supabase
       .from("queue_entry_services")
-      .select("queue_entry_id, service_id, estimated_duration, status, started_at, services ( category )")
+      .select("queue_entry_id, service_id, estimated_duration, status, started_at, preferred_staff_id, services ( name, category )")
       .in("status", ["pending", "in_service"]),
     supabase
       .from("queue_entry_services")
@@ -241,9 +265,16 @@ export async function estimateEntryWait(entryId: string, crowdThreshold: number)
       .from("stations")
       .select("category")
       .eq("is_active", true),
+    activeModel
+      ? supabase
+        .from("queue_entries")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", new Date(Date.now() - 60 * 60 * 1000).toISOString())
+        .neq("status", "cancelled")
+      : Promise.resolve({ data: null, error: null, count: null }),
   ]);
 
-  for (const result of [entriesRes, serviceItemsRes, historyRes, staffRes, stationsRes]) {
+  for (const result of [entriesRes, serviceItemsRes, historyRes, staffRes, stationsRes, arrivalRateRes]) {
     if (result.error) throw new Error(result.error.message);
   }
 
@@ -259,11 +290,24 @@ export async function estimateEntryWait(entryId: string, crowdThreshold: number)
   }
   for (const history of historyByService.values()) history.reverse();
 
+  const targetServices: {
+    serviceId: string;
+    category: string;
+    preferredStaffId: string | null;
+    fallbackMinutes: number;
+  }[] = [];
   const targetLanes = new Map<string, string>();
   for (const item of serviceItemsRes.data ?? []) {
     if (item.queue_entry_id !== target.id) continue;
     const service = Array.isArray(item.services) ? item.services[0] : item.services;
-    if (service?.category) targetLanes.set(serviceLane(service.category), service.category);
+    if (!service?.category || !item.service_id) continue;
+    targetLanes.set(serviceLane(service.category), service.category);
+    targetServices.push({
+      serviceId: item.service_id,
+      category: service.category,
+      preferredStaffId: item.preferred_staff_id,
+      fallbackMinutes: Number(item.estimated_duration || 0),
+    });
   }
 
   const laneWorkload = new Map<string, number>();
@@ -301,12 +345,36 @@ export async function estimateEntryWait(entryId: string, crowdThreshold: number)
     ewtMinutes = Math.max(ewtMinutes, (laneWorkload.get(lane) ?? 0) / capacity);
   }
 
+  const peopleAhead = [...activeEntries.values()].filter(
+    (entry) => entry.status === "waiting" && entry.position !== null && entry.position < target.position!
+  ).length;
+  const modelPredictions = activeModel
+    ? targetServices.map((service) => {
+      const history = historyByService.get(service.serviceId) ?? [];
+      const recentDurations = history.slice(-5);
+      const ma5 = recentDurations.length
+        ? recentDurations.reduce((sum, duration) => sum + duration, 0) / recentDurations.length
+        : service.fallbackMinutes;
+      return predictForecastWait(activeModel.model, {
+        ma5,
+        queue_length: peopleAhead,
+        arrival_rate: arrivalRateRes.count ?? 0,
+        hour_of_day: Number(new Intl.DateTimeFormat("en-US", {
+          timeZone: "Asia/Manila",
+          hour: "2-digit",
+          hourCycle: "h23",
+        }).format(new Date())),
+        stylist_request: Number(Boolean(service.preferredStaffId || target.preferred_staff_id)),
+        walk_in: Number(target.arrival_type === "walk_in"),
+      });
+    })
+    : [];
+  const mlrWait = modelPredictions.length ? Math.max(...modelPredictions) : null;
+
   return {
-    ewtMinutes: round(ewtMinutes, 1),
-    source: "application_fallback" as const,
-    peopleAhead: [...activeEntries.values()].filter(
-      (entry) => entry.status === "waiting" && entry.position !== null && entry.position < target.position!
-    ).length,
+    ewtMinutes: round(mlrWait === null ? ewtMinutes : (ewtMinutes + mlrWait) / 2, 1),
+    source: mlrWait === null ? "application_fallback" as const : "mlr_model" as const,
+    peopleAhead,
   };
 }
 

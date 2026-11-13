@@ -15,6 +15,43 @@ export interface ServiceDurationSummary {
   meanAbsoluteErrorMinutes: number;
 }
 
+export interface QueueWaitOutcome {
+  status: string;
+  predictedWaitMinutes: number | null;
+  actualWaitMinutes: number | null;
+}
+
+export function summarizeQueueWaitAccuracy(outcomes: QueueWaitOutcome[]) {
+  const completed = outcomes.filter((outcome) => outcome.status === "completed");
+  const noShowCount = outcomes.filter((outcome) => outcome.status === "no_show").length;
+  const matched = completed.filter((outcome) =>
+    Number.isFinite(outcome.predictedWaitMinutes)
+    && Number.isFinite(outcome.actualWaitMinutes)
+    && Number(outcome.predictedWaitMinutes) >= 0
+    && Number(outcome.actualWaitMinutes) >= 0
+    && Number(outcome.actualWaitMinutes) <= 720
+  );
+  const actualWaitMinutes = matched.map((outcome) => Number(outcome.actualWaitMinutes));
+  const waitMeanAbsoluteErrorMinutes = matched.length
+    ? matched.reduce((sum, outcome) =>
+        sum + Math.abs(Number(outcome.predictedWaitMinutes) - Number(outcome.actualWaitMinutes)), 0,
+      ) / matched.length
+    : null;
+
+  return {
+    sampleCount: matched.length,
+    linkedOutcomeCount: outcomes.filter((outcome) => Number.isFinite(outcome.predictedWaitMinutes)).length,
+    waitMeanAbsoluteErrorMinutes: waitMeanAbsoluteErrorMinutes === null
+      ? null
+      : round(waitMeanAbsoluteErrorMinutes),
+    averageActualWaitMinutes: actualWaitMinutes.length
+      ? round(actualWaitMinutes.reduce((sum, value) => sum + value, 0) / actualWaitMinutes.length)
+      : null,
+    noShowCount,
+    completedCount: completed.length,
+  };
+}
+
 export function summarizeServiceDurations(
   observations: ServiceDurationObservation[],
 ): ServiceDurationSummary[] {
@@ -56,65 +93,61 @@ export function summarizeServiceDurations(
     .sort((left, right) => left.serviceName.localeCompare(right.serviceName));
 }
 
-export interface ScenarioHourInput {
+export interface HourlyDemandPoint {
   hour: number;
-  forecastCustomers: number;
+  movingAverage: number;
+  average: number;
 }
 
-export interface WhatIfScenarioInput {
-  staffCount: number;
-  activeStaff: number;
-  demandMultiplier: number;
-  eventMultiplier: number;
-  averageServiceMinutes: number;
-  serviceDurationMultiplier: number;
-  projectedWaitMinutes: number;
-  hourly: ScenarioHourInput[];
-}
+export function aggregateHourlyDemand(
+  rows: { created_at: string }[],
+  currentDate: Date,
+  historyDays = 90,
+  windowSize = 7,
+): HourlyDemandPoint[] {
+  if (!Number.isFinite(currentDate.getTime())) throw new Error("Current forecast date must be valid.");
+  const dayCount = Math.max(1, Math.floor(historyDays));
+  const safeWindow = Math.max(1, Math.floor(windowSize));
+  const manilaFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  });
+  const dateParts = manilaFormatter.formatToParts(currentDate);
+  const datePart = (type: string) => dateParts.find((part) => part.type === type)?.value;
+  const currentDay = `${datePart("year")}-${datePart("month")}-${datePart("day")}`;
+  const currentUtcDate = new Date(`${currentDay}T00:00:00Z`);
+  const dates = Array.from({ length: dayCount }, (_, index) => {
+    const date = new Date(currentUtcDate.getTime() - (dayCount - index - 1) * 24 * 60 * 60 * 1000);
+    return date.toISOString().slice(0, 10);
+  });
+  const dateSet = new Set(dates);
+  const buckets = new Map<string, number>();
 
-export function buildWhatIfScenario(input: WhatIfScenarioInput) {
-  const baselineStaffCount = input.activeStaff;
-  const baselineProjectedWaitMinutes = Math.round(input.projectedWaitMinutes * input.eventMultiplier);
-  const totalMultiplier = Math.max(0.1, Math.min(5, input.demandMultiplier * input.eventMultiplier));
-  const scenarioAverageServiceMinutes = round(input.averageServiceMinutes * input.serviceDurationMultiplier);
-  const hourly = input.hourly.map(({ hour, forecastCustomers: baseForecast }) => {
-    const baselineForecastCustomers = round(baseForecast * input.eventMultiplier);
-    const forecastCustomers = round(baselineForecastCustomers * input.demandMultiplier);
-    const baselineRecommendedStaff = Math.ceil(baselineForecastCustomers * input.averageServiceMinutes / 60);
-    const recommendedStaff = Math.ceil(
-      forecastCustomers * input.averageServiceMinutes * input.serviceDurationMultiplier / 60,
-    );
+  for (const row of rows) {
+    const createdAt = new Date(row.created_at);
+    if (!Number.isFinite(createdAt.getTime())) continue;
+    const parts = manilaFormatter.formatToParts(createdAt);
+    const value = (type: string) => parts.find((part) => part.type === type)?.value;
+    const day = `${value("year")}-${value("month")}-${value("day")}`;
+    if (!dateSet.has(day)) continue;
+    const hour = Number(value("hour"));
+    const key = `${day}-${hour}`;
+    buckets.set(key, (buckets.get(key) ?? 0) + 1);
+  }
+
+  return Array.from({ length: 24 }, (_, hour) => {
+    const series = dates.map((day) => buckets.get(`${day}-${hour}`) ?? 0);
+    const recent = series.slice(-safeWindow);
     return {
       hour,
-      baselineForecastCustomers,
-      forecastCustomers,
-      baselineRecommendedStaff,
-      baselineStaffingGap: baselineRecommendedStaff - baselineStaffCount,
-      recommendedStaff,
-      staffingGap: recommendedStaff - input.staffCount,
+      movingAverage: recent.reduce((sum, count) => sum + count, 0) / recent.length,
+      average: series.reduce((sum, count) => sum + count, 0) / series.length,
     };
   });
-  const projectedWaitMinutes = Math.round(
-    input.projectedWaitMinutes
-    * (Math.max(input.activeStaff, 1) / input.staffCount)
-    * totalMultiplier
-    * input.serviceDurationMultiplier,
-  );
-
-  return {
-    staffCount: input.staffCount,
-    baselineStaffCount,
-    demandMultiplier: input.demandMultiplier,
-    serviceDurationMultiplier: input.serviceDurationMultiplier,
-    eventMultiplier: input.eventMultiplier,
-    combinedMultiplier: totalMultiplier,
-    baselineProjectedWaitMinutes,
-    projectedWaitMinutes,
-    waitChangeMinutes: projectedWaitMinutes - baselineProjectedWaitMinutes,
-    averageServiceMinutes: round(input.averageServiceMinutes),
-    scenarioAverageServiceMinutes,
-    hourly,
-  };
 }
 
 function round(value: number, digits = 1) {

@@ -7,7 +7,7 @@ import { sendQueueSms, type Milestone } from "./sms.js";
 interface QueuedMilestone {
   id: string;
   queue_entry_id: string;
-  milestone: "joined" | "almost_your_turn" | "your_turn" | "admin_reordered" | "staff_reassigned";
+  milestone: "joined" | "almost_your_turn" | "your_turn" | "admin_reordered" | "staff_reassigned" | "service_completed";
   recipient: string;
   customer_name: string;
   extra: string | null;
@@ -21,7 +21,7 @@ export async function enqueueQueueSmsOnce(input: {
   entryId: string;
   phone: string | null;
   customerName: string;
-  milestone: "joined" | "almost_your_turn" | "your_turn" | "admin_reordered" | "staff_reassigned";
+  milestone: "joined" | "almost_your_turn" | "your_turn" | "admin_reordered" | "staff_reassigned" | "service_completed";
   extra?: string;
   eventKey?: string;
 }) {
@@ -53,13 +53,8 @@ export async function enqueueQueueSmsOnce(input: {
 
     if (error?.code === "23505") return { sent: false, reason: "already_queued" as const };
     if (error && isMissingTable(error, "queue_sms_outbox")) {
-      console.warn("queue_sms_outbox is unavailable; delivering this milestone without outbox deduplication.");
-      return await sendQueueSms({
-        phone: input.phone,
-        customerName: input.customerName,
-        milestone: input.milestone,
-        extra: input.extra,
-      });
+      console.warn(`queue_sms_outbox is unavailable; skipping ${input.milestone} SMS to prevent duplicate sends.`);
+      return { sent: false as const, reason: "outbox_unavailable" as const };
     }
     if (error) throw new Error(`Unable to queue SMS milestone: ${error.message}`);
     if (!data) return { sent: false, reason: "already_queued" as const };
@@ -130,13 +125,14 @@ async function enqueueNearTurnMessages() {
     .select("id, ticket_number, customer_name, contact_number, position")
     .eq("status", "waiting")
     .not("contact_number", "is", null)
+    .lte("position", 4)
     .order("position", { ascending: true, nullsFirst: false });
   if (error) throw new Error(`Unable to check near-turn queue positions: ${error.message}`);
 
-  for (const entry of entries ?? []) {
-    if (entry.position === null) continue;
+  await Promise.all((entries ?? []).map(async (entry) => {
+    if (entry.position === null) return;
     const clientsAhead = Math.max(0, Number(entry.position) - 1);
-    if (clientsAhead < 1 || clientsAhead > 3) continue;
+    if (clientsAhead < 1 || clientsAhead > 3) return;
 
     const wait = await estimateEntryWait(entry.id, config.crowdThreshold);
     await enqueueQueueSmsOnce({
@@ -146,7 +142,7 @@ async function enqueueNearTurnMessages() {
       milestone: "almost_your_turn",
       extra: `You are ${clientsAhead} clients away. Est. wait ${Math.max(0, Math.round(wait.ewtMinutes))} mins. Ticket Q-${String(entry.ticket_number).padStart(3, "0")}.`,
     });
-  }
+  }));
 }
 
 export async function processQueueNotifications() {

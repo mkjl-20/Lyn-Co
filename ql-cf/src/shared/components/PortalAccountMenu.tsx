@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronDown, CircleUserRound, LogOut, ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
 import { StatusBadge } from "@/shared/components/StatusBadge";
+import { LogoutConfirmationDialog } from "@/shared/components/LogoutConfirmationDialog";
 
 interface PortalAccountMenuProps {
   fullName: string;
@@ -27,8 +28,7 @@ export function PortalAccountMenu({
   onSignOut,
 }: PortalAccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [isSigningOut, setIsSigningOut] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false);
   const initials = fullName
     .split(/\s+/)
     .map((part) => part[0])
@@ -37,16 +37,9 @@ export function PortalAccountMenu({
     .toUpperCase();
 
   async function handleSignOut() {
-    if (isSigningOut) return;
-    setIsSigningOut(true);
-    setErrorMessage(null);
-    try {
-      await onSignOut();
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Unable to sign out.");
-    } finally {
-      setIsSigningOut(false);
-    }
+    await onSignOut();
+    setIsOpen(false);
+    setShowLogoutConfirmation(false);
   }
 
   return (
@@ -110,19 +103,23 @@ export function PortalAccountMenu({
                 {secondaryLabel}
               </Link>
             )}
-            {errorMessage && <p role="alert" className="px-3 py-2 text-xs text-danger">{errorMessage}</p>}
             <button
               type="button"
               role="menuitem"
-              disabled={isSigningOut}
-              onClick={() => void handleSignOut()}
-              className="ui-action-danger flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-medium transition-colors disabled:opacity-50"
+              onClick={() => setShowLogoutConfirmation(true)}
+              className="ui-action-danger flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
             >
               <LogOut size={15} aria-hidden="true" />
-              {isSigningOut ? "Signing out…" : "Sign out"}
+              Sign out
             </button>
           </div>
         </div>
+      )}
+      {showLogoutConfirmation && (
+        <LogoutConfirmationDialog
+          onCancel={() => setShowLogoutConfirmation(false)}
+          onConfirm={handleSignOut}
+        />
       )}
     </div>
   );

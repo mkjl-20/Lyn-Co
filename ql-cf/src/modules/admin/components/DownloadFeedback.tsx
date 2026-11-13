@@ -44,7 +44,7 @@ export function DownloadFeedback({
       {isRunning && state.progressPercent !== undefined && state.progressPercent !== null ? (
         <div className="mt-2">
           <div className="mb-1 flex justify-between text-xs">
-            <span>Download progress</span>
+            <span>Downloading backup</span>
             <span>{state.progressPercent}%</span>
           </div>
           <progress
@@ -55,7 +55,10 @@ export function DownloadFeedback({
           />
         </div>
       ) : isRunning ? (
-        <progress aria-label="Preparing download" className="mt-2 h-2 w-full accent-sage" />
+        <div className="mt-2">
+          <p className="mb-1 text-xs">Preparing backup transfer</p>
+          <progress aria-label="Preparing backup transfer" className="h-2 w-full accent-sage" />
+        </div>
       ) : state.status === "success" ? (
         <progress aria-label="Download prepared" value={100} max={100} className="mt-2 h-2 w-full accent-sage" />
       ) : null}

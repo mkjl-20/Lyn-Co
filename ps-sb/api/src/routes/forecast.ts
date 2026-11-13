@@ -2,7 +2,10 @@ import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
 import { getSupabase, getSupabaseAdmin } from "../lib/supabase.js";
 import { computeHybridForecast, persistForecastLog } from "../services/forecast.js";
-import { buildWhatIfScenario, summarizeServiceDurations } from "../services/forecastAnalytics.js";
+import {
+  summarizeQueueWaitAccuracy,
+  summarizeServiceDurations,
+} from "../services/forecastAnalytics.js";
 import { trainForecastModel, type ForecastTrainingRow } from "../services/forecastTraining.js";
 import { writeAuditLog } from "../lib/auditLog.js";
 import { getCrowdThreshold } from "../services/systemSettings.js";
@@ -296,7 +299,7 @@ forecastRouter.get("/analytics", async (req, res) => {
           .limit(5000),
         supabase
           .from("queue_entries")
-          .select("status, created_at")
+          .select("status, created_at, predicted_wait_min, actual_wait_min")
           .in("status", ["completed", "no_show"])
           .gte("created_at", dayStartIso)
           .lt("created_at", dayEndIso)
@@ -351,8 +354,11 @@ forecastRouter.get("/analytics", async (req, res) => {
     const averageServiceMinutes = durations.length
       ? durations.reduce((total, duration) => total + duration, 0) / durations.length
       : 30;
-    const completedOutcomeCount = (outcomeRes.data ?? []).filter((entry) => entry.status === "completed").length;
-    const noShowCount = (outcomeRes.data ?? []).filter((entry) => entry.status === "no_show").length;
+    const waitAccuracy = summarizeQueueWaitAccuracy((outcomeRes.data ?? []).map((entry) => ({
+      status: entry.status,
+      predictedWaitMinutes: entry.predicted_wait_min === null ? null : Number(entry.predicted_wait_min),
+      actualWaitMinutes: entry.actual_wait_min === null ? null : Number(entry.actual_wait_min),
+    })));
     const staffingRecommendations = adjustedForecast.hourly.map((hour) => {
       const recommendedStaff = Math.ceil(hour.hybrid * averageServiceMinutes / 60);
       return {
@@ -417,19 +423,22 @@ forecastRouter.get("/analytics", async (req, res) => {
       averageServiceMinutes: Math.round(averageServiceMinutes * 10) / 10,
       serviceDurationReport,
       forecastAccuracy: {
-        available: false,
-        sampleCount: 0,
-        waitMeanAbsoluteErrorMinutes: null,
+        available: waitAccuracy.sampleCount > 0,
+        sampleCount: waitAccuracy.sampleCount,
+        linkedOutcomeCount: waitAccuracy.linkedOutcomeCount,
+        waitMeanAbsoluteErrorMinutes: waitAccuracy.waitMeanAbsoluteErrorMinutes,
         noShowBrierScore: null,
-        message: "Stored forecasts are not linked to individual visits or no-show probabilities, so historical prediction accuracy cannot be calculated.",
+        message: waitAccuracy.sampleCount > 0
+          ? `Wait predictions are matched to ${waitAccuracy.sampleCount} completed visits. No-show probability scores remain unavailable because individual no-show probabilities are not generated.`
+          : "No completed visits in this period have both a stored wait prediction and an actual wait yet. Predictions are linked to completed/no-show outcomes when available.",
         observedOutcomes: {
-          completedCount: completedOutcomeCount,
-          noShowCount,
-          noShowRate: completedOutcomeCount + noShowCount > 0
-            ? Math.round((noShowCount / (completedOutcomeCount + noShowCount)) * 1000) / 10
+          completedCount: waitAccuracy.completedCount,
+          noShowCount: waitAccuracy.noShowCount,
+          noShowRate: waitAccuracy.completedCount + waitAccuracy.noShowCount > 0
+            ? Math.round((waitAccuracy.noShowCount / (waitAccuracy.completedCount + waitAccuracy.noShowCount)) * 1000) / 10
             : null,
-          actualWaitSampleCount: 0,
-          averageActualWaitMinutes: null,
+          actualWaitSampleCount: waitAccuracy.sampleCount,
+          averageActualWaitMinutes: waitAccuracy.averageActualWaitMinutes,
         },
       },
       monthlyForecast: { history: monthHistory, forecast: monthlyForecast },
@@ -446,85 +455,6 @@ forecastRouter.get("/analytics", async (req, res) => {
       success: false,
       message: error instanceof Error ? error.message : "Analytics failed.",
     });
-  }
-});
-
-forecastRouter.post("/simulate", async (req, res) => {
-  try {
-    const user = await getAuthenticatedUser(req);
-    if (!user) {
-      res.status(401).json({ success: false, message: "Sign in to run a what-if simulation." });
-      return;
-    }
-    const supabase = getSupabaseAdmin();
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("account_role, is_active")
-      .eq("id", user.id)
-      .maybeSingle();
-    if (profileError) throw profileError;
-    if (!profile?.is_active || profile.account_role !== "admin") {
-      res.status(403).json({ success: false, message: "Active administrator access is required to run a simulation." });
-      return;
-    }
-
-    const staffCount = Number(req.body?.staffCount);
-    const scenarioMultiplier = Number(req.body?.demandMultiplier);
-    const serviceDurationMultiplier = Number(req.body?.serviceDurationMultiplier ?? 1);
-    if (!Number.isInteger(staffCount) || staffCount < 1 || staffCount > 100
-      || !Number.isFinite(scenarioMultiplier) || scenarioMultiplier < 0.1 || scenarioMultiplier > 5
-      || !Number.isFinite(serviceDurationMultiplier) || serviceDurationMultiplier < 0.5 || serviceDurationMultiplier > 2) {
-      res.status(400).json({ success: false, message: "Choose 1–100 staff, a demand multiplier from 0.1 to 5, and a service-duration multiplier from 0.5 to 2." });
-      return;
-    }
-
-    const crowdThreshold = await getCrowdThreshold();
-    const [forecast, durationsRes] = await Promise.all([
-      computeHybridForecast(crowdThreshold, supabase),
-      supabase.from("queue_entry_services")
-        .select("estimated_duration")
-        .eq("status", "completed")
-        .not("estimated_duration", "is", null)
-        .limit(5000),
-    ]);
-    if (durationsRes.error) throw durationsRes.error;
-    const durations = (durationsRes.data ?? [])
-      .map((service) => Number(service.estimated_duration))
-      .filter((duration) => Number.isFinite(duration) && duration > 0);
-    const averageServiceMinutes = durations.length
-      ? durations.reduce((total, duration) => total + duration, 0) / durations.length
-      : 30;
-    const todayInManila = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Manila",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-    const eventCalendar = await loadForecastEvents(supabase, todayInManila);
-    const eventMultiplier = Math.max(0.1, Math.min(5, eventCalendar.events.reduce(
-      (multiplier, event) => multiplier * Number(event.demand_multiplier),
-      1,
-    )));
-    const scenario = buildWhatIfScenario({
-      staffCount,
-      activeStaff: forecast.activeStaff,
-      demandMultiplier: scenarioMultiplier,
-      eventMultiplier,
-      averageServiceMinutes,
-      serviceDurationMultiplier,
-      projectedWaitMinutes: forecast.ewtMinutes,
-      hourly: forecast.hourly.map((hour) => ({ hour: hour.hour, forecastCustomers: hour.hybrid })),
-    });
-    res.json({
-      success: true,
-      scenario: {
-        eventAdjustmentAvailable: eventCalendar.available,
-        ...scenario,
-      },
-    });
-  } catch (error) {
-    console.error("Forecast what-if simulation failed:", error);
-    res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Unable to run the simulation." });
   }
 });
 

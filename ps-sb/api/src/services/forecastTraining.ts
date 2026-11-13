@@ -45,6 +45,40 @@ export interface TrainResult {
   model: MlrModel;
 }
 
+export type MlrFeatureValues = Partial<Record<typeof MLR_FEATURES[number], number>>;
+
+export function isMlrModel(value: unknown): value is MlrModel {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const model = value as Record<string, unknown>;
+  if (!Array.isArray(model.features) || model.features.length === 0
+    || !model.features.every((feature) => MLR_FEATURES.includes(feature as typeof MLR_FEATURES[number]))
+    || new Set(model.features).size !== model.features.length
+    || !Array.isArray(model.mean) || !Array.isArray(model.std) || !Array.isArray(model.coef)) return false;
+
+  const featureCount = model.features.length;
+  return model.mean.length === featureCount
+    && model.std.length === featureCount
+    && model.coef.length === featureCount + 1
+    && [...model.mean, ...model.std, ...model.coef].every(
+      (number) => typeof number === "number" && Number.isFinite(number),
+    )
+    && model.std.every((deviation) => deviation > 0);
+}
+
+export function predictForecastWait(model: MlrModel, features: MlrFeatureValues) {
+  if (!isMlrModel(model)) throw new Error("The active forecasting model has an invalid feature schema.");
+  const row = model.features.map((feature, index) => {
+    const value = features[feature];
+    if (value === undefined) return model.mean[index];
+    if (!Number.isFinite(value)) throw new Error(`Forecast feature "${feature}" must be finite.`);
+    return value;
+  });
+  return Math.max(0, model.coef[0] + row.reduce(
+    (sum, value, index) => sum + model.coef[index + 1] * ((value - model.mean[index]) / model.std[index]),
+    0,
+  ));
+}
+
 function solve(matrix: number[][], values: number[]) {
   const size = values.length;
   const augmented = matrix.map((row, index) => [...row, values[index]]);
@@ -102,13 +136,6 @@ function fitModel(features: number[][], targets: number[], ridge = 1e-3) {
   return { mean: means, std: deviations, coef: solve(gram, targetProducts) };
 }
 
-function predict(model: Pick<MlrModel, "mean" | "std" | "coef">, row: number[]) {
-  return Math.max(0, model.coef[0] + row.reduce(
-    (sum, value, index) => sum + model.coef[index + 1] * ((value - model.mean[index]) / model.std[index]),
-    0,
-  ));
-}
-
 function featureRows(rows: ForecastTrainingRow[]) {
   const historyByService = new Map<string, number[]>();
   const samples: { features: number[]; target: number }[] = [];
@@ -153,7 +180,11 @@ export function trainForecastModel(rows: ForecastTrainingRow[]): TrainResult {
   const train = samples.slice(0, splitIndex);
   const test = samples.slice(splitIndex);
   const trainingModel = fitModel(train.map((sample) => sample.features), train.map((sample) => sample.target));
-  const predictions = test.map((sample) => predict(trainingModel, sample.features));
+  const predictions = test.map((sample) => Math.max(0, trainingModel.coef[0] + sample.features.reduce(
+    (sum, value, index) => sum + trainingModel.coef[index + 1]
+      * ((value - trainingModel.mean[index]) / trainingModel.std[index]),
+    0,
+  )));
   const testTargets = test.map((sample) => sample.target);
   const testMean = testTargets.reduce((sum, value) => sum + value, 0) / testTargets.length;
   const trainingMean = train.reduce((sum, sample) => sum + sample.target, 0) / train.length;

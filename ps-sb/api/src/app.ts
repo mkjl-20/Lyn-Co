@@ -51,8 +51,9 @@ export function createApp() {
       }
       callback(new Error("Origin is not allowed by CORS."));
     },
+    exposedHeaders: ["X-Backup-Record-Counts"],
   }));
-  app.use(express.json({ limit: "20mb" }));
+  app.use(express.json({ limit: "200mb" }));
 
   app.get("/api/health", async (_req, res) => {
     try {

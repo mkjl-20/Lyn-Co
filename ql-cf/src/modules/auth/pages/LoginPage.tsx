@@ -61,7 +61,7 @@ export function LoginPage() {
 
       <div className="login-card flex w-full max-w-[420px] flex-col items-center justify-start gap-1 overflow-hidden rounded-[24px] bg-white px-4 pb-6 pt-4 shadow-[0_16px_28px_rgba(0,0,0,0.12)] sm:gap-1 sm:px-6 sm:pb-8 sm:pt-6 lg:min-h-[496px] lg:max-w-[846px] lg:flex-row lg:justify-between lg:gap-0 lg:p-10">
         <div className="login-logo-panel flex h-32 w-full max-w-[240px] shrink-0 items-center justify-center overflow-hidden rounded-[24px] bg-white p-4 lg:aspect-square lg:h-auto lg:max-w-[417px] lg:p-5 lg:w-[55%]">
-          <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-[18px] bg-white p-2 lg:p-5">
+          <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-[18px] bg-white p-2 lg:p-[30px]">
             {logoDataUrl ? (
               <SalonLogoImage src={logoDataUrl} alt="Salon logo" className="h-full w-full rounded-2xl object-contain" />
             ) : (
@@ -136,7 +136,7 @@ export function LoginPage() {
                 aria-busy={isSubmitting}
                 className="!mt-5 mb-2 block h-11 w-full appearance-none rounded-[9px] bg-[#252525] py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-[#111] disabled:cursor-wait disabled:opacity-50"
               >
-                <span aria-live="polite">{isSubmitting ? "Signing in..." : "Log in"}</span>
+                <span aria-live="polite">{isSubmitting ? "Signing in..." : "Sign in"}</span>
               </button>
             </form>
           </div>

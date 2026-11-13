@@ -2,17 +2,28 @@ import { Router, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { fromDatabasePromotionDiscountType, toDatabasePromotionDiscountType } from "../lib/promotionDiscount.js";
 import { chooseBestEligiblePromotion, type AutomaticPromotionCandidate } from "../lib/promotionRules.js";
-import { getSupabaseAdmin } from "../lib/supabase.js";
+import { createSupabaseAuthClient, getSupabaseAdmin } from "../lib/supabase.js";
 import { enqueueQueueSmsOnce } from "../services/queueNotifications.js";
 import { staffCanPerformCategory } from "../services/queueRules.js";
 import { getSalonSettings, validateSalonSettings } from "../services/systemSettings.js";
-import { BACKUP_FORMAT, createAdminBackup, getScheduledBackupStatus } from "../services/adminBackup.js";
+import {
+  BACKUP_FORMAT,
+  createAdminBackup,
+  getScheduledAdminBackupPath,
+  getScheduledBackupStatus,
+  listScheduledAdminBackups,
+} from "../services/adminBackup.js";
 import { isMissingTable } from "../services/staffAvailability.js";
+import { rateLimit, requestIpKey } from "../middleware/rateLimit.js";
 import { getAuthenticatedUser } from "./auth.js";
 
 export const adminWorkspaceRouter = Router();
 
 const PAYMENT_METHODS = ["cash", "card", "ewallet", "other"] as const;
+const posAdjustmentPasswordRateLimit = rateLimit(
+  [{ key: requestIpKey, limit: 10, windowMs: 15 * 60 * 1000 }],
+  "Too many refund or void attempts. Please try again later.",
+);
 
 async function requireAdmin(req: Request, res: Response) {
   const user = await getAuthenticatedUser(req);
@@ -57,6 +68,28 @@ async function requirePosAccess(req: Request, res: Response) {
   }
 
   return { user, supabase, accountRole: profile.account_role };
+}
+
+async function verifyAdjustmentPassword(user: { email?: string | null }, passwordValue: unknown, res: Response) {
+  const password = typeof passwordValue === "string" ? passwordValue : "";
+  if (!password || password.length > 256) {
+    res.status(400).json({ success: false, message: "Enter your password to confirm this transaction adjustment." });
+    return false;
+  }
+  if (!user.email) {
+    res.status(403).json({ success: false, message: "This account cannot verify its password." });
+    return false;
+  }
+
+  const { error } = await createSupabaseAuthClient().auth.signInWithPassword({
+    email: user.email,
+    password,
+  });
+  if (error) {
+    res.status(403).json({ success: false, message: "Password confirmation failed." });
+    return false;
+  }
+  return true;
 }
 
 function stringField(value: unknown, maxLength: number) {
@@ -201,6 +234,36 @@ adminWorkspaceRouter.put("/settings", async (req, res) => {
   } catch (error) {
     console.error("Salon settings save failed:", error);
     res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Unable to save salon settings." });
+  }
+});
+
+adminWorkspaceRouter.patch("/settings/queue-url", async (req, res) => {
+  try {
+    const access = await requireAdmin(req, res);
+    if (!access) return;
+    const currentSettings = await getSalonSettings();
+    const settings = validateSalonSettings({ ...currentSettings, queueUrl: req.body?.queueUrl });
+    if (!settings) {
+      res.status(400).json({ success: false, message: "Enter a valid HTTP or HTTPS queue address." });
+      return;
+    }
+    const { error } = await access.supabase
+      .from("system_settings")
+      .upsert({ key: "salon_settings", value: settings, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    if (error) throw error;
+    await writeAuditLog(
+      access.supabase,
+      access.user.id,
+      "salon.queue_url_updated",
+      "salon_settings",
+      null,
+      "Updated the public queue address.",
+      { queueUrlUpdated: Boolean(settings.queueUrl) },
+    );
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error("Public queue address save failed:", error);
+    res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Unable to save the queue address." });
   }
 });
 
@@ -1482,11 +1545,13 @@ adminWorkspaceRouter.get("/transactions", async (req, res) => {
   }
 });
 
-adminWorkspaceRouter.post("/transactions/:transactionId/adjustments", async (req, res) => {
+adminWorkspaceRouter.post("/transactions/:transactionId/adjustments", posAdjustmentPasswordRateLimit, async (req, res) => {
   try {
-    const access = await requireAdmin(req, res);
+    const access = await requirePosAccess(req, res);
     if (!access) return;
-    const { transactionId } = req.params;
+    if (access.accountRole === "admin"
+      && !await verifyAdjustmentPassword(access.user, req.body?.password, res)) return;
+    const transactionId = typeof req.params.transactionId === "string" ? req.params.transactionId : "";
     const adjustmentType = req.body?.adjustmentType;
     const reason = stringField(req.body?.reason, 500);
     const amount = optionalNumericField(req.body?.amount);
@@ -1549,7 +1614,7 @@ adminWorkspaceRouter.post("/transactions/:transactionId/adjustments", async (req
   }
 });
 
-adminWorkspaceRouter.patch("/transaction-adjustments/:adjustmentId/approve", async (req, res) => {
+adminWorkspaceRouter.patch("/transaction-adjustments/:adjustmentId/approve", posAdjustmentPasswordRateLimit, async (req, res) => {
   try {
     const user = await getAuthenticatedUser(req);
     if (!user) {
@@ -1567,7 +1632,8 @@ adminWorkspaceRouter.patch("/transaction-adjustments/:adjustmentId/approve", asy
       res.status(403).json({ success: false, message: "An active manager or administrator must approve this adjustment." });
       return;
     }
-    const { adjustmentId } = req.params;
+    if (!await verifyAdjustmentPassword(user, req.body?.password, res)) return;
+    const adjustmentId = typeof req.params.adjustmentId === "string" ? req.params.adjustmentId : "";
     if (!UUID_PATTERN.test(adjustmentId)) {
       res.status(400).json({ success: false, message: "Choose a valid adjustment." });
       return;
@@ -1607,7 +1673,7 @@ adminWorkspaceRouter.patch("/transaction-adjustments/:adjustmentId/approve", asy
   }
 });
 
-adminWorkspaceRouter.patch("/transaction-adjustments/:adjustmentId/reject", async (req, res) => {
+adminWorkspaceRouter.patch("/transaction-adjustments/:adjustmentId/reject", posAdjustmentPasswordRateLimit, async (req, res) => {
   try {
     const user = await getAuthenticatedUser(req);
     if (!user) {
@@ -1625,7 +1691,8 @@ adminWorkspaceRouter.patch("/transaction-adjustments/:adjustmentId/reject", asyn
       res.status(403).json({ success: false, message: "An active manager or administrator must review this adjustment." });
       return;
     }
-    const { adjustmentId } = req.params;
+    if (!await verifyAdjustmentPassword(user, req.body?.password, res)) return;
+    const adjustmentId = typeof req.params.adjustmentId === "string" ? req.params.adjustmentId : "";
     if (!UUID_PATTERN.test(adjustmentId)) {
       res.status(400).json({ success: false, message: "Choose a valid adjustment." });
       return;
@@ -2053,10 +2120,51 @@ adminWorkspaceRouter.get("/backup", async (req, res) => {
     });
     if (auditError) throw auditError;
     await writeAuditLog(access.supabase, access.user.id, "backup.exported", "admin_backup", null, "Exported an admin data backup.", backup.recordCounts);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Backup-Record-Counts", JSON.stringify(backup.recordCounts));
     res.json({ success: true, backup });
   } catch (error) {
     console.error("Admin data export failed:", error);
     res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Unable to export admin data." });
+  }
+});
+
+adminWorkspaceRouter.get("/backup/files", async (req, res) => {
+  try {
+    const access = await requireAdmin(req, res);
+    if (!access) return;
+    const result = await listScheduledAdminBackups();
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("Scheduled backup files load failed:", error);
+    res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Unable to load scheduled backup files." });
+  }
+});
+
+adminWorkspaceRouter.get("/backup/files/:fileName", async (req, res) => {
+  try {
+    const access = await requireAdmin(req, res);
+    if (!access) return;
+    const fileName = req.params.fileName;
+    const filePath = await getScheduledAdminBackupPath(fileName);
+    if (!filePath) {
+      res.status(404).json({ success: false, message: "The selected scheduled backup file is unavailable." });
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.download(filePath, fileName, (error) => {
+      if (!error) return;
+      console.error("Scheduled backup download failed:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: "Unable to download the scheduled backup file." });
+      }
+    });
+  } catch (error) {
+    console.error("Scheduled backup download failed:", error);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Unable to download the scheduled backup file." });
+    }
   }
 });
 
@@ -2093,8 +2201,8 @@ adminWorkspaceRouter.post("/backup/restore", async (req, res) => {
     const access = await requireAdmin(req, res);
     if (!access) return;
     const payload = req.body?.backup;
-    if (!payload || payload.format !== BACKUP_FORMAT || Buffer.byteLength(JSON.stringify(payload), "utf8") > 20_000_000) {
-      res.status(400).json({ success: false, message: "Select a valid LynQ admin-data backup under 20 MB." });
+    if (!payload || payload.format !== BACKUP_FORMAT || Buffer.byteLength(JSON.stringify(payload), "utf8") > 200 * 1024 * 1024) {
+      res.status(400).json({ success: false, message: "Select a valid LynQ operational-data backup under 200 MB." });
       return;
     }
     const { data, error } = await access.supabase.rpc("restore_lynq_admin_backup", { p_payload: payload });

@@ -42,10 +42,12 @@ Express processing unit and Supabase (PostgreSQL, Auth, Realtime) for Lyn & Co S
 | `GET /api/admin/workspace/checkout-candidates` | Completed unpaid visits (administrator only) |
 | `GET/POST /api/admin/workspace/transactions` | POS transaction records and completed-ticket payments (administrator only) |
 | `GET /api/admin/workspace/reports` | Date-filtered business reports (administrator only) |
-| `GET /api/admin/workspace/backup` | Download administrative backup (administrator only) |
+| `GET /api/admin/workspace/backup` | Download full operational-data backup (administrator only) |
+| `GET /api/admin/workspace/backup/files` | List scheduled backup snapshots on the configured drive (administrator only) |
+| `GET /api/admin/workspace/backup/files/:fileName` | Download a scheduled snapshot from the configured drive (administrator only) |
 | `GET /api/admin/workspace/backup/history` | Backup history (administrator only) |
 | `GET /api/admin/workspace/backup/schedule-status` | Scheduled backup status (administrator only) |
-| `POST /api/admin/workspace/backup/restore` | Restore administrative backup (administrator only) |
+| `POST /api/admin/workspace/backup/restore` | Restore full operational-data backup (administrator only) |
 | `GET/PUT /api/admin/workspace/settings` | Salon details, hours, queue URL, and theme (administrator only) |
 | `PATCH /api/admin/workspace/queue/:entryId/status` | Cancel or mark a waiting visit as a no-show (administrator only) |
 | `PATCH /api/admin/workspace/queue/:entryId/assignment` | Assign a waiting visit to staff (administrator only) |
@@ -113,6 +115,16 @@ Available migrations, in timestamp order:
 27. `supabase/migrations/20261102090000_customer_account_privacy_consent.sql`
 28. `supabase/migrations/20261102100000_queue_admin_staff_workflows.sql`
 29. `supabase/migrations/20261102110000_add_forecast_training_datasets.sql`
+30. `supabase/migrations/20261102121000_shared_rate_limit_buckets.sql`
+31. `supabase/migrations/20261104030000_add_service_completed_sms_milestone.sql`
+32. `supabase/migrations/20261104040000_reserve_service_seat_on_call.sql`
+33. `supabase/migrations/20261104050000_queue_seat_lookup_indexes.sql`
+34. `supabase/migrations/20261104100000_repair_forecast_hourly_demand.sql`
+
+The latest queue migrations must be applied before deploying their matching
+API changes. They add shared API rate-limit storage, the service-completion SMS
+milestone, transactional service-seat reservation when staff call a customer,
+and indexes for active seat reservations and near-turn queue lookups.
 
 #### Queue/admin staff workflow deployment
 
@@ -139,10 +151,13 @@ validates and idempotently imports historical records into `service_history`,
 then evaluates the estimated-wait-time MLR with an 80/20 chronological holdout
 and stores the model and MAE/baseline metrics in `mlr_models`.
 
-The imported model is not yet wired into live customer wait estimates; current
-queue estimates remain unchanged. Review source data, data permissions, sample
-size, and holdout performance before any production prediction integration.
-Do not upload customer-identifying information in the training CSV.
+An active model is used for live queue wait estimates only when it beats its
+chronological holdout mean-baseline MAE. Its prediction is blended evenly with
+the existing queue-workload estimate; unavailable live features are centered
+at their training means. With no suitable active model, the existing estimate
+is unchanged. Review source data, permissions, sample size, and holdout metrics
+before training or activating a model. Do not upload customer-identifying
+information in the training CSV.
 Download the CSV template from the Analytics page. Required headers are
 `Date`, `Service_Category`, `Service`, `Staff_Name`, `Staff_Experience_Level`,
 `Stylist_Request`, `Add_On_Service`, `Queue_Length`, `Arrival_Rate_Per_Hr`,
@@ -152,6 +167,11 @@ Download the CSV template from the Analytics page. Required headers are
 optional. Dates use `YYYY-MM-DD`; times use 12-hour AM/PM or 24-hour notation
 and are interpreted as Philippines time. Rows must be chronologically valid,
 and training requires at least 30 usable rows after the moving-average warm-up.
+The hourly MA/LR demand fallback uses zero-filled daily buckets in Philippines
+time, a trailing seven-day moving average, and a linear regression over the
+90-day mean for each hour. Apply
+`20261104100000_repair_forecast_hourly_demand.sql` so the normal SQL forecast
+path uses the same calculation.
 
 The queue service staff-preferences migration lets customers request a
 different eligible stylist for each selected service, including each member
@@ -244,18 +264,24 @@ Configure these API runtime variables in the API host:
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY` (secret; server-side only)
 - `WEB_APP_URL` (the exact HTTPS frontend origin allowed by CORS)
+- `SMS_GATEWAY_URL` and `SMS_API_KEY` (optional; required for queue SMS)
 - `PORT` (if required by the host)
 - `NODE_ENV=production`
 
-For daily flash-drive backups, configure `LYNQ_BACKUP_DIR` to a folder on a
-flash drive connected to the API computer (for example, `E:\LynQBackups` on
-Windows), `LYNQ_BACKUP_TIME=20:30`, and
+For scheduled full operational backups, configure `LYNQ_BACKUP_DIR` to a folder
+on a flash drive connected to the API computer (for example,
+`E:\LynQBackups` on Windows), `LYNQ_BACKUP_TIME=20:30`, and
 `LYNQ_BACKUP_TIME_ZONE=Asia/Manila`. The API must remain running at the
-scheduled time. If the configured drive is unavailable, the run is skipped and
-the admin Backup & Restore page reports the result; backups are never redirected
-to another drive. Existing backup files are kept. Leave `LYNQ_BACKUP_DIR`
-unset until the USB drive is connected and its actual path is known; automatic
-backups remain disabled in that case.
+scheduled time. Daily, weekly, monthly, and yearly snapshots are created, keeping
+7 daily, 4 weekly, 12 monthly, and 5 yearly files. Backups include operational
+customer, queue, staff-profile, service, transaction, settings, reporting, and
+audit data; authentication credentials and provider secrets are excluded. If
+the configured drive is unavailable, the run is skipped and the admin Backup &
+Restore page reports the result; backups are never redirected to another drive.
+Leave `LYNQ_BACKUP_DIR` unset until the USB drive is connected and its actual
+path is known; automatic backups remain disabled in that case.
+The Backup & Restore screen lists available snapshots on the configured drive
+and lets an administrator save one to the browser’s download location.
 
 The API refuses to start in production without HTTPS URLs, an explicit web
 origin, and the service-role key. `/api/health` returns HTTP 503 with the

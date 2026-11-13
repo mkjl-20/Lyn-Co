@@ -11,6 +11,7 @@ export interface SalonSettings {
   queueUrl: string;
   themeColor: ThemeColor;
   logoDataUrl: string;
+  bannerDataUrl: string;
 }
 
 export type ThemeColor = "monochrome" | "rose" | "sage" | "ocean" | "plum" | "lavender" | "forest" | "midnight";
@@ -25,6 +26,7 @@ export const DEFAULT_SALON_SETTINGS: SalonSettings = {
   queueUrl: "",
   themeColor: "monochrome",
   logoDataUrl: "",
+  bannerDataUrl: "",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -45,6 +47,7 @@ function parseSalonSettings(value: unknown): SalonSettings {
     queueUrl: typeof value.queueUrl === "string" ? value.queueUrl : "",
     themeColor: isThemeColor(value.themeColor) ? value.themeColor : DEFAULT_SALON_SETTINGS.themeColor,
     logoDataUrl: isLogoDataUrl(value.logoDataUrl) ? value.logoDataUrl : "",
+    bannerDataUrl: isBannerDataUrl(value.bannerDataUrl) ? value.bannerDataUrl : "",
   };
 }
 
@@ -53,6 +56,13 @@ function isLogoDataUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const match = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
   return Boolean(match && Buffer.byteLength(match[1], "base64") <= 375_000);
+}
+
+function isBannerDataUrl(value: unknown): value is string {
+  if (value === "") return true;
+  if (typeof value !== "string") return false;
+  const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  return Boolean(match && Buffer.byteLength(match[1], "base64") <= 500_000);
 }
 
 export function isThemeColor(value: unknown): value is ThemeColor {
@@ -77,6 +87,7 @@ export async function getCrowdThreshold(): Promise<number> {
 export function validateSalonSettings(value: unknown): SalonSettings | null {
   if (!isRecord(value)) return null;
   const { salonName, contactNumber, address, openingTime, closingTime, crowdThreshold, queueUrl, themeColor, logoDataUrl } = value;
+  const bannerDataUrl = value.bannerDataUrl === undefined ? "" : value.bannerDataUrl;
   const validTime = (time: unknown): time is string =>
     typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
   const validQueueUrl = (url: unknown): url is string => {
@@ -100,7 +111,8 @@ export function validateSalonSettings(value: unknown): SalonSettings | null {
     || crowdThreshold < 1 || crowdThreshold > 1000
     || !validQueueUrl(queueUrl)
     || !isThemeColor(themeColor)
-    || !isLogoDataUrl(logoDataUrl)) {
+    || !isLogoDataUrl(logoDataUrl)
+    || !isBannerDataUrl(bannerDataUrl)) {
     return null;
   }
   return {
@@ -113,5 +125,6 @@ export function validateSalonSettings(value: unknown): SalonSettings | null {
     queueUrl: queueUrl.trim().replace(/\/+$/, ""),
     themeColor,
     logoDataUrl,
+    bannerDataUrl,
   };
 }

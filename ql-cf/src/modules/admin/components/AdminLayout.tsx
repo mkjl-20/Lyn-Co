@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { Bell, ChevronDown, CircleUserRound, LogOut, Menu, ShieldCheck } from "lucide-react";
-import { createPortal } from "react-dom";
 import { AdminSidebar } from "./AdminSidebar";
 import { useAuth } from "@/shared/context/AuthContext";
 import { SystemIcon } from "@/shared/components/SystemIcon";
 import { StatusBadge } from "@/shared/components/StatusBadge";
+import { LogoutConfirmationDialog } from "@/shared/components/LogoutConfirmationDialog";
 
 export function AdminLayout() {
   const { logout, currentUser, user } = useAuth();
@@ -122,7 +122,7 @@ export function AdminLayout() {
                         setIsAccountMenuOpen(false);
                         setShowLogoutConfirmation(true);
                       }}
-                      className="ui-action-danger flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-medium"
+                      className="ui-action-danger flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-medium text-red-600 hover:bg-red-50"
                     >
                       <SystemIcon icon={LogOut} />
                       Sign out
@@ -133,22 +133,15 @@ export function AdminLayout() {
             </div>
           </div>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <Outlet />
         </div>
       </div>
-      {showLogoutConfirmation && createPortal(
-        <div className="fixed inset-0 z-[100] flex min-h-screen items-center justify-center bg-black/35 p-4 backdrop-blur-[2px]">
-          <div className="w-full max-w-xs rounded-[10px] bg-white p-5 text-center shadow-2xl">
-            <h2 className="text-base font-semibold text-ink">Are you sure you want to log out?</h2>
-            <p className="mt-2 text-sm text-ink/60">You’ll need to sign in again to access the admin system.</p>
-            <div className="mt-5 flex flex-col gap-2">
-              <button type="button" onClick={() => void logout()} className="w-full rounded-[8px] bg-sage-deep px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-clay">Yes, log out</button>
-              <button type="button" onClick={() => setShowLogoutConfirmation(false)} className="w-full rounded-[8px] px-4 py-2.5 text-sm text-ink/70 transition-colors hover:bg-sage-light hover:text-sage-deep">Cancel</button>
-            </div>
-          </div>
-        </div>,
-        document.body
+      {showLogoutConfirmation && (
+        <LogoutConfirmationDialog
+          onCancel={() => setShowLogoutConfirmation(false)}
+          onConfirm={logout}
+        />
       )}
     </div>
   );

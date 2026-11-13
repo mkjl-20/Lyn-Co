@@ -5,27 +5,28 @@ import { ProtectedRoute } from "../shared/routes/ProtectedRoute";
 
 import { StaffPresenceLayout } from "../modules/staff/StaffPresenceLayout";
 import { AdminLayout } from "../modules/admin/components/AdminLayout";
-import { DeviceHeartbeatReporter, type DeviceHeartbeatStatus } from "../features/deviceMonitoring/DeviceHeartbeatReporter";
+import { DeviceHeartbeatReporter, type DeviceHeartbeatStatus } from "../shared/features/deviceMonitoring/DeviceHeartbeatReporter";
 import { NotFoundPage } from "../shared/components/NotFoundPage";
 
 const LoginPage = lazy(() => import("../modules/auth/pages/LoginPage").then((module) => ({ default: module.LoginPage })));
-const AdminDashboardPage = lazy(() => import("../modules/admin/pages/AdminDashboardPage").then((module) => ({ default: module.AdminDashboardPage })));
-const AdminQueuePage = lazy(() => import("../modules/admin/pages/AdminQueuePage").then((module) => ({ default: module.AdminQueuePage })));
-const AdminAnalyticsPage = lazy(() => import("../modules/admin/pages/AdminAnalyticsPage").then((module) => ({ default: module.AdminAnalyticsPage })));
-const StaffDashboardPage = lazy(() => import("../modules/staff/StaffDashboardPage"));
-const StaffQueuePage = lazy(() => import("../modules/staff/StaffQueuePage"));
-const StaffHistoryPage = lazy(() => import("../modules/staff/StaffHistoryPage"));
-const StaffProfilePage = lazy(() => import("../modules/staff/StaffProfilePage"));
-const StaffChangePasswordPage = lazy(() => import("../modules/staff/StaffChangePasswordPage"));
-const StaffPosPage = lazy(() => import("../modules/staff/StaffPosPage"));
-const CustomerJoinPage = lazy(() => import("../modules/customer/pages/CustomerJoinPage").then((module) => ({ default: module.CustomerJoinPage })));
-const QueueStatusPage = lazy(() => import("../modules/customer/pages/QueueStatusPage").then((module) => ({ default: module.QueueStatusPage })));
-const CustomerAccountPage = lazy(() => import("../modules/customer/pages/CustomerAccountPage").then((module) => ({ default: module.CustomerAccountPage })));
-const StaffManagementPage = lazy(() => import("../modules/admin/pages/StaffManagementPage"));
-const AdminModulePage = lazy(() => import("../modules/admin/pages/AdminModulePage").then((module) => ({ default: module.AdminModulePage })));
-const AdminTvPage = lazy(() => import("../modules/admin/pages/AdminTvPage").then((module) => ({ default: module.AdminTvPage })));
-const AdminAccountPage = lazy(() => import("../modules/admin/pages/AdminAccountPage").then((module) => ({ default: module.AdminAccountPage })));
-const AdminDeviceMonitoringPage = lazy(() => import("../modules/admin/pages/AdminDeviceMonitoringPage").then((module) => ({ default: module.AdminDeviceMonitoringPage })));
+const AdminDashboardPage = lazy(() => import("../modules/admin/features/dashboard/pages/AdminDashboardPage").then((module) => ({ default: module.AdminDashboardPage })));
+const AdminQueuePage = lazy(() => import("../modules/admin/features/queue/pages/AdminQueuePage").then((module) => ({ default: module.AdminQueuePage })));
+const AdminAnalyticsPage = lazy(() => import("../modules/admin/features/analytics/pages/AdminAnalyticsPage").then((module) => ({ default: module.AdminAnalyticsPage })));
+const StaffDashboardPage = lazy(() => import("../modules/staff/features/dashboard/pages/StaffDashboardPage"));
+const StaffQueuePage = lazy(() => import("../modules/staff/features/queue/pages/StaffQueuePage"));
+const StaffHistoryPage = lazy(() => import("../modules/staff/features/history/pages/StaffHistoryPage"));
+const StaffProfilePage = lazy(() => import("../modules/staff/features/profile/pages/StaffProfilePage"));
+const StaffChangePasswordPage = lazy(() => import("../modules/staff/features/profile/pages/StaffChangePasswordPage"));
+const StaffPosPage = lazy(() => import("../modules/staff/features/pointOfSale/pages/StaffPosPage"));
+const CustomerJoinPage = lazy(() => import("../modules/customer/features/queue/pages/CustomerJoinPage").then((module) => ({ default: module.CustomerJoinPage })));
+const QueueStatusPage = lazy(() => import("../modules/customer/features/queue/pages/QueueStatusPage").then((module) => ({ default: module.QueueStatusPage })));
+const PaymentReceiptPage = lazy(() => import("../modules/customer/features/queue/pages/PaymentReceiptPage").then((module) => ({ default: module.PaymentReceiptPage })));
+const CustomerAccountPage = lazy(() => import("../modules/customer/features/account/pages/CustomerAccountPage").then((module) => ({ default: module.CustomerAccountPage })));
+const StaffManagementPage = lazy(() => import("../modules/admin/features/staff/pages/StaffManagementPage"));
+const AdminModulePage = lazy(() => import("../modules/admin/features/businessModules/pages/AdminModulePage").then((module) => ({ default: module.AdminModulePage })));
+const AdminTvPage = lazy(() => import("../modules/admin/features/tv/pages/AdminTvPage").then((module) => ({ default: module.AdminTvPage })));
+const AdminAccountPage = lazy(() => import("../modules/admin/features/account/pages/AdminAccountPage").then((module) => ({ default: module.AdminAccountPage })));
+const AdminDeviceMonitoringPage = lazy(() => import("../modules/admin/features/deviceMonitoring/pages/AdminDeviceMonitoringPage").then((module) => ({ default: module.AdminDeviceMonitoringPage })));
 
 export function AppRoutes() {
   return (
@@ -51,6 +52,10 @@ export function AppRoutes() {
       <Route
         path="/queue-status/:entryId"
         element={<QueueStatusPage />}
+      />
+      <Route
+        path="/receipt/:entryId"
+        element={<PaymentReceiptPage />}
       />
       <Route
         path="/customer-account"

@@ -3,6 +3,8 @@ import { createContext, useContext } from "react";
 export interface SalonBrandingContextValue {
   logoDataUrl: string;
   setLogoDataUrl: (logoDataUrl: string) => void;
+  bannerDataUrl: string;
+  setBannerDataUrl: (bannerDataUrl: string) => void;
   queueUrl: string;
   setQueueUrl: (queueUrl: string) => void;
 }

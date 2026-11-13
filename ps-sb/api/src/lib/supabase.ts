@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { config } from "../config.js";
 
 let client: SupabaseClient | null = null;
+let adminClient: SupabaseClient | null = null;
 
 export function getSupabase(): SupabaseClient {
   if (!client) {
@@ -24,9 +25,12 @@ export function getSupabaseAdmin(): SupabaseClient {
     throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY in ps-sb/api/.env.local. Staff account creation requires the Supabase service-role key.");
   }
 
-  return createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
+  if (!adminClient) {
+    adminClient = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+  }
+  return adminClient;
 }
 
 export function getSupabaseForUser(accessToken: string): SupabaseClient {

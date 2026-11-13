@@ -7,8 +7,9 @@
     "dev": "concurrently -n web,api -c cyan,magenta \"npm run dev --prefix ql-cf\" \"npm run dev --prefix ps-sb/api\"",
     "dev:web": "npm run dev --prefix ql-cf",
     "dev:api": "npm run dev --prefix ps-sb/api",
-    "build": "npm run build --prefix ql-cf",
-    "lint": "npm run lint --prefix ql-cf"
+    "build": "npm run build --prefix ql-cf && npm run build --prefix ps-sb/api",
+    "lint": "npm run lint --prefix ql-cf",
+    "test": "npm run test --prefix ql-cf && npm test --prefix ps-sb/api"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

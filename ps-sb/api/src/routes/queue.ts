@@ -18,9 +18,20 @@ import { promotionIneligibilityReason } from "../lib/promotionRules.js";
 import { writeAuditLog } from "../lib/auditLog.js";
 import { bodyIdentityKey, rateLimit, requestIpKey } from "../middleware/rateLimit.js";
 import { isMissingStaffAvailabilityTable, isMissingTable, loadUnavailableStaffIds } from "../services/staffAvailability.js";
+import { getSalonSettings } from "../services/systemSettings.js";
 
 export const queueRouter = Router();
 type StaffAvailability = "available" | "on_break";
+
+async function persistQueueWaitPrediction(entryId: string, waitMinutes: number | null) {
+  if (waitMinutes === null || !Number.isFinite(waitMinutes)) return;
+  const { error } = await getSupabaseAdmin()
+    .from("queue_entries")
+    .update({ predicted_wait_min: Math.max(0, waitMinutes) })
+    .eq("id", entryId)
+    .is("predicted_wait_min", null);
+  if (error) throw new Error(`Unable to store the queue wait prediction: ${error.message}`);
+}
 
 queueRouter.get("/staff/availability", async (req, res) => {
   try {
@@ -398,8 +409,9 @@ queueRouter.post("/manual", async (req, res) => {
         res.status(400).json({ success: false, message: "Choose an appointment time in the future." });
         return;
       }
-      if (scheduled.getHours() < APPOINTMENT_OPEN_HOUR || scheduled.getHours() >= APPOINTMENT_CLOSE_HOUR) {
-        res.status(400).json({ success: false, message: "Appointments are available between 10:00 AM and 8:00 PM." });
+      const { openingTime, closingTime } = await getSalonSettings();
+      if (!isWithinSalonHours(appointmentAt, openingTime, closingTime)) {
+        res.status(400).json({ success: false, message: salonHoursMessage(openingTime, closingTime) });
         return;
       }
       scheduledAppointmentAt = scheduled.toISOString();
@@ -473,12 +485,15 @@ queueRouter.post("/manual", async (req, res) => {
     }
 
     const wait = await estimateEntryWait(entry.id, config.crowdThreshold);
+    void persistQueueWaitPrediction(entry.id, wait.ewtMinutes).catch((error: unknown) => {
+      console.error("Queue wait prediction persistence failed:", error);
+    });
     const sms = await enqueueQueueSmsOnce({
       entryId: entry.id,
       phone: contactNumber,
       customerName,
       milestone: "joined",
-      extra: `Ticket Q-${String(entry.ticket_number).padStart(3, "0")}, position ${entry.position ?? "pending"}. Est. wait ~${wait.ewtMinutes} min.`,
+      extra: `Ticket Q-${String(entry.ticket_number).padStart(3, "0")}, position ${entry.position ?? "pending"}. Est. wait ~${wait.ewtMinutes} min. Your service seat will be assigned when staff calls you.`,
     });
     await writeAuditLog({
       actorId: user.id,
@@ -580,11 +595,14 @@ function getErrorDetails(error: unknown) {
   return { code: null, message: null };
 }
 
-// Salon is open 9 AM - 9 PM, but staff need time before opening and after
-// closing to prep/close the shop, so appointment slots are restricted to
-// 10 AM - 8 PM.
-const APPOINTMENT_OPEN_HOUR = 10;
-const APPOINTMENT_CLOSE_HOUR = 20;
+function isWithinSalonHours(appointmentAt: string, openingTime: string, closingTime: string) {
+  const match = /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/.exec(appointmentAt);
+  return Boolean(match && match[1] >= openingTime && match[1] < closingTime);
+}
+
+function salonHoursMessage(openingTime: string, closingTime: string) {
+  return `Appointments must start during salon hours (${openingTime}–${closingTime}).`;
+}
 
 queueRouter.post("/get-wait-quote", async (req, res) => {
   try {
@@ -1017,7 +1035,7 @@ queueRouter.post("/service/:itemId/call", async (req, res) => {
 
     const { data: item, error: itemError } = await supabase
       .from("queue_entry_services")
-      .select("id, queue_entry_id, status, service_stage, assigned_staff_id, preferred_staff_id, services ( name, category ), queue_entries ( id, ticket_number, customer_name, contact_number, preferred_staff_id, assigned_staff_id )")
+      .select("id, queue_entry_id, status, service_stage, assigned_staff_id, preferred_staff_id, customer_service_seat_id, services ( name, category ), queue_entries ( id, ticket_number, customer_name, contact_number, preferred_staff_id, assigned_staff_id )")
       .eq("id", req.params.itemId)
       .maybeSingle();
     if (itemError) throw itemError;
@@ -1108,6 +1126,30 @@ queueRouter.post("/service/:itemId/call", async (req, res) => {
         return;
       }
     }
+    const seatChanged = Boolean(requestedSeatId && requestedSeatId !== item.customer_service_seat_id);
+    if (requestedSeatId) {
+      const { error: callError } = await supabase.rpc("call_service_item_with_customer_seat", {
+        p_item_id: item.id,
+        p_customer_service_seat_id: requestedSeatId,
+      });
+      if (callError?.code === "PGRST202" || callError?.code === "42883") {
+        res.status(503).json({
+          success: false,
+          message: "Apply the latest queue migration before calling a customer to a service chair.",
+        });
+        return;
+      }
+      if (callError?.code === "23505") {
+        res.status(409).json({ success: false, message: "That service chair was just assigned to another customer." });
+        return;
+      }
+      if (callError?.code === "23514") {
+        res.status(409).json({ success: false, message: "This service has changed. Refresh the queue and try again." });
+        return;
+      }
+      if (callError) throw callError;
+    }
+
     if (item.service_stage === "called") {
       if (isInternalHandoff) {
         res.json({
@@ -1124,24 +1166,27 @@ queueRouter.post("/service/:itemId/call", async (req, res) => {
           customerName: entry.customer_name,
           milestone: "your_turn",
           extra: assignmentMessage,
+          ...(seatChanged ? { eventKey: item.id } : {}),
         })
         : { sent: false, reason: "queue_entry_unavailable" as const };
       res.json({ success: true, serviceStage: "called", sms });
       return;
     }
 
-    const { data: updated, error: updateError } = await supabase
-      .from("queue_entry_services")
-      .update({ service_stage: "called" })
-      .eq("id", item.id)
-      .eq("status", "pending")
-      .eq("service_stage", "waiting")
-      .select("id")
-      .maybeSingle();
-    if (updateError) throw updateError;
-    if (!updated) {
-      res.status(409).json({ success: false, message: "This service has changed. Refresh and try again." });
-      return;
+    if (!requestedSeatId) {
+      const { data: updated, error: updateError } = await supabase
+        .from("queue_entry_services")
+        .update({ service_stage: "called" })
+        .eq("id", item.id)
+        .eq("status", "pending")
+        .eq("service_stage", "waiting")
+        .select("id")
+        .maybeSingle();
+      if (updateError) throw updateError;
+      if (!updated) {
+        res.status(409).json({ success: false, message: "This service has changed. Refresh and try again." });
+        return;
+      }
     }
 
     await writeAuditLog({
@@ -1195,7 +1240,7 @@ queueRouter.patch("/service/:itemId/progress", async (req, res) => {
 
     const { data: item, error: itemError } = await supabase
       .from("queue_entry_services")
-      .select("id, status, assigned_staff_id")
+      .select("id, queue_entry_id, status, assigned_staff_id, services ( name ), queue_entries ( id, ticket_number, customer_name, contact_number )")
       .eq("id", req.params.itemId)
       .maybeSingle();
     if (itemError) throw itemError;
@@ -1270,7 +1315,7 @@ queueRouter.post("/service/:itemId/complete", async (req, res) => {
 
     const { data: item, error: itemError } = await supabase
       .from("queue_entry_services")
-      .select("id, status, assigned_staff_id")
+      .select("id, queue_entry_id, status, assigned_staff_id, services ( name ), queue_entries ( id, customer_name, contact_number )")
       .eq("id", req.params.itemId)
       .maybeSingle();
     if (itemError) throw itemError;
@@ -1299,6 +1344,18 @@ queueRouter.post("/service/:itemId/complete", async (req, res) => {
       entityId: item.id,
       summary: `Completed service ${item.id}.`,
     });
+    const entry = Array.isArray(item.queue_entries) ? item.queue_entries[0] : item.queue_entries;
+    const service = Array.isArray(item.services) ? item.services[0] : item.services;
+    if (entry?.contact_number) {
+      await enqueueQueueSmsOnce({
+        entryId: entry.id,
+        phone: entry.contact_number,
+        customerName: entry.customer_name,
+        milestone: "service_completed",
+        eventKey: item.id,
+        extra: service?.name ? `Your ${service.name} service is complete.` : undefined,
+      });
+    }
     res.json({ success: true });
   } catch (error) {
     console.error("Complete service failed:", error);
@@ -1460,11 +1517,11 @@ queueRouter.post("/join", queueJoinRateLimit, async (req, res) => {
         res.status(400).json({ success: false, message: "Appointment time must be in the future." });
         return;
       }
-      const hour = scheduled.getHours();
-      if (hour < APPOINTMENT_OPEN_HOUR || hour >= APPOINTMENT_CLOSE_HOUR) {
+      const { openingTime, closingTime } = await getSalonSettings();
+      if (!isWithinSalonHours(appointmentAt, openingTime, closingTime)) {
         res.status(400).json({
           success: false,
-          message: "Appointments are available between 10:00 AM and 8:00 PM.",
+          message: salonHoursMessage(openingTime, closingTime),
         });
         return;
       }
@@ -1634,7 +1691,7 @@ queueRouter.post("/join", queueJoinRateLimit, async (req, res) => {
       position: number | null;
       created_at: string;
       assigned_service_seat_labels: string[];
-      wait: Awaited<ReturnType<typeof estimateEntryWait>>;
+      wait: { ewtMinutes: number | null; source: string };
     }[] = [];
     for (const [memberIndex, member] of joinMembers.entries()) {
       const memberContactNumber = memberIndex === 0 ? contactNumber : null;
@@ -1703,52 +1760,43 @@ queueRouter.post("/join", queueJoinRateLimit, async (req, res) => {
         .insert(queueServiceRows);
       if (queueServicesError) throw new Error("Unable to save the selected services.");
 
-      if (memberContactNumber) {
-        const { error: customerError } = await supabase
-          .from("customer_records")
-          .upsert({
+      const customerRecordPromise = memberContactNumber
+        ? supabase.from("customer_records").upsert({
             contact_number: memberContactNumber,
             display_name: member.customerName,
             updated_at: new Date().toISOString(),
-          }, { onConflict: "contact_number" });
-        if (customerError) throw new Error(`Unable to save customer details: ${customerError.message}`);
+          }, { onConflict: "contact_number" })
+        : Promise.resolve({ error: null });
+      const [customerRecordResult, [workstationResult, customerSeatsResult]] = await Promise.all([
+        customerRecordPromise,
+        Promise.all([
+          supabase.rpc("assign_workstations_for_entry", { p_entry_id: queueEntry.id }),
+          supabase.rpc("assign_customer_service_seats_for_entry", { p_entry_id: queueEntry.id }),
+        ]),
+      ]);
+      if (customerRecordResult.error) {
+        throw new Error(`Unable to save customer details: ${customerRecordResult.error.message}`);
       }
-
-      const { error: workstationError } = await supabase.rpc("assign_workstations_for_entry", {
-        p_entry_id: queueEntry.id,
-      });
+      const { error: workstationError } = workstationResult;
+      const { error: customerSeatsError } = customerSeatsResult;
       if (workstationError) throw new Error(`Unable to assign salon workstations: ${workstationError.message}`);
-
-      const { error: customerSeatsError } = await supabase.rpc("assign_customer_service_seats_for_entry", {
-        p_entry_id: queueEntry.id,
-      });
       if (customerSeatsError) throw new Error(`Unable to assign customer service seats: ${customerSeatsError.message}`);
 
       const { data: assignedItems, error: assignedItemsError } = await supabase
         .from("queue_entry_services")
-        .select("customer_service_seat_id")
+        .select("customer_service_seat_id, customer_service_seats ( label )")
         .eq("queue_entry_id", queueEntry.id);
       if (assignedItemsError) throw assignedItemsError;
 
-      const serviceSeatIds = [...new Set((assignedItems ?? [])
-        .map((item) => item.customer_service_seat_id)
-        .filter((id): id is string => Boolean(id)))];
-      const assignedSeatLabels: string[] = [];
-      if (serviceSeatIds.length > 0) {
-        const { data: assignedSeats, error: assignedSeatsError } = await supabase
-          .from("customer_service_seats")
-          .select("id, label")
-          .in("id", serviceSeatIds);
-        if (assignedSeatsError) throw assignedSeatsError;
-        const labelsById = new Map((assignedSeats ?? []).map((seat) => [seat.id, seat.label]));
-        for (const seatId of serviceSeatIds) {
-          const label = labelsById.get(seatId);
-          if (label) assignedSeatLabels.push(label);
+      const labelsBySeatId = new Map<string, string>();
+      for (const item of assignedItems ?? []) {
+        const seatLabel = item.customer_service_seats?.[0]?.label;
+        if (item.customer_service_seat_id && seatLabel) {
+          labelsBySeatId.set(item.customer_service_seat_id, seatLabel);
         }
       }
-
+      const assignedSeatLabels = [...labelsBySeatId.values()];
       if (!isPartyJoin) createdEntryIds.length = 0;
-      const wait = await estimateEntryWait(queueEntry.id, config.crowdThreshold);
       partyEntries.push({
         ...queueEntry,
         id: queueEntry.id,
@@ -1765,7 +1813,7 @@ queueRouter.post("/join", queueJoinRateLimit, async (req, res) => {
         position: queueEntry.position,
         created_at: queueEntry.created_at,
         assigned_service_seat_labels: assignedSeatLabels,
-        wait,
+        wait: { ewtMinutes: null, source: "pending" },
       });
     }
 
@@ -1774,19 +1822,6 @@ queueRouter.post("/join", queueJoinRateLimit, async (req, res) => {
     createdEntryIds.length = 0;
     createdPartyId = null;
     const { wait, ...entry } = primaryEntry;
-    const sms = await enqueueQueueSmsOnce({
-      entryId: primaryEntry.id,
-      phone: contactNumber,
-      customerName,
-      milestone: "joined",
-      extra: [
-        `Ticket Q-${String(primaryEntry.ticket_number).padStart(3, "0")}, position ${primaryEntry.position ?? "pending"}.`,
-        primaryEntry.assigned_service_seat_labels.length > 0
-          ? `Service seat${primaryEntry.assigned_service_seat_labels.length > 1 ? "s" : ""}: ${primaryEntry.assigned_service_seat_labels.join(", ")}.`
-          : "No service seat is available yet; please ask reception.",
-        `Est. wait ~${wait.ewtMinutes} min.`,
-      ].join(" "),
-    });
     res.status(201).json({
       success: true,
       source,
@@ -1794,7 +1829,24 @@ queueRouter.post("/join", queueJoinRateLimit, async (req, res) => {
       entry,
       ...(responsePartyId ? { party: { id: responsePartyId, entries: partyEntries } } : {}),
       wait,
-      sms,
+      sms: { sent: false, reason: "queued_in_background" },
+    });
+    setImmediate(() => {
+      void Promise.all(partyEntries.map(async (partyEntry) => {
+        const prediction = await estimateEntryWait(partyEntry.id, config.crowdThreshold);
+        await persistQueueWaitPrediction(partyEntry.id, prediction.ewtMinutes);
+      })).catch((error: unknown) => {
+        console.error("Queue wait prediction persistence failed:", error);
+      });
+      void enqueueQueueSmsOnce({
+        entryId: primaryEntry.id,
+        phone: contactNumber,
+        customerName,
+        milestone: "joined",
+        extra: `Ticket Q-${String(primaryEntry.ticket_number).padStart(3, "0")}, position ${primaryEntry.position ?? "pending"}. Your service seat will be assigned when staff calls you.`,
+      }).catch((error: unknown) => {
+        console.error("Post-join SMS processing failed:", error);
+      });
     });
   } catch (error) {
     try {
@@ -1838,7 +1890,10 @@ queueRouter.get("/no-show-risk", async (req, res) => {
     if (entriesError) throw entriesError;
 
     const now = Date.now();
-    const walkIns = (entries ?? []).filter((entry) => entry.arrival_type !== "appointment");
+    const walkIns = (entries ?? []).filter((entry) =>
+      entry.arrival_type !== "appointment"
+      && now - new Date(entry.created_at).getTime() >= 15 * 60 * 1000
+    );
     const waitEstimates = await Promise.all(walkIns.map(async (entry) => ({
       entry,
       wait: await estimateEntryWait(entry.id, config.crowdThreshold),
@@ -1989,6 +2044,198 @@ queueRouter.post("/:entryId/services", async (req, res) => {
   }
 });
 
+queueRouter.post("/:entryId/services/:serviceItemId/replace", async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ success: false, message: "Sign in to change a queued service." });
+      return;
+    }
+    const { entryId, serviceItemId } = req.params;
+    const serviceId = typeof req.body?.serviceId === "string" ? req.body.serviceId : "";
+    if (![entryId, serviceItemId, serviceId].every((id) => UUID_PATTERN.test(id))) {
+      res.status(400).json({ success: false, message: "Choose a valid queue entry, queued service, and replacement service." });
+      return;
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("account_role, staff_role, is_active")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (profileError) throw profileError;
+    if (!profile?.is_active || !["staff", "admin"].includes(profile.account_role)) {
+      res.status(403).json({ success: false, message: "Active staff access is required to change a queued service." });
+      return;
+    }
+
+    const [{ data: entry, error: entryError }, { data: item, error: itemError }, { data: service, error: serviceError }] = await Promise.all([
+      supabase.from("queue_entries")
+        .select("id, customer_name, status, estimated_duration")
+        .eq("id", entryId)
+        .maybeSingle(),
+      supabase.from("queue_entry_services")
+        .select("id, queue_entry_id, service_id, price, estimated_duration, status, assigned_staff_id, station_id, station_reserved_until, station_queue_position, customer_service_seat_id")
+        .eq("id", serviceItemId)
+        .eq("queue_entry_id", entryId)
+        .maybeSingle(),
+      supabase.from("services")
+        .select("id, name, category, price, duration_minutes, is_visible, is_available")
+        .eq("id", serviceId)
+        .maybeSingle(),
+    ]);
+    if (entryError) throw entryError;
+    if (itemError) throw itemError;
+    if (serviceError) throw serviceError;
+    if (!entry || !["waiting", "in_service"].includes(entry.status) || !item || item.status !== "pending") {
+      res.status(409).json({ success: false, message: "Only an unstarted service on an active queue visit can be changed." });
+      return;
+    }
+    if (!service?.is_visible || !service.is_available) {
+      res.status(400).json({ success: false, message: "That replacement service is no longer available." });
+      return;
+    }
+    if (service.id === item.service_id) {
+      res.status(400).json({ success: false, message: "Choose a different service." });
+      return;
+    }
+
+    const isQueueManager = profile.account_role === "admin" || profile.staff_role === "receptionist";
+    const ownsService = item.assigned_staff_id === user.id;
+    if (!isQueueManager && (!ownsService || !staffCanPerformCategory(profile.staff_role ?? "", service.category))) {
+      res.status(403).json({ success: false, message: "Only a queue manager or the assigned service provider can change this queued service." });
+      return;
+    }
+
+    const { data: existingServices, error: existingServicesError } = await supabase
+      .from("queue_entry_services")
+      .select("service_id")
+      .eq("queue_entry_id", entry.id)
+      .neq("id", item.id)
+      .neq("status", "cancelled");
+    if (existingServicesError) throw existingServicesError;
+    if ((existingServices ?? []).some((existing) => existing.service_id === service.id)) {
+      res.status(409).json({ success: false, message: "This visit already includes that service." });
+      return;
+    }
+
+    const oldDuration = Number(item.estimated_duration || 0);
+    const newDuration = Number(service.duration_minutes || 0);
+    const nextEntryDuration = Math.max(0, Number(entry.estimated_duration || 0) - oldDuration + newDuration);
+    const { data: updatedItem, error: itemUpdateError } = await supabase
+      .from("queue_entry_services")
+      .update({
+        service_id: service.id,
+        price: Number(service.price || 0),
+        estimated_duration: newDuration,
+        station_id: null,
+        station_reserved_until: null,
+        station_queue_position: null,
+        customer_service_seat_id: null,
+        assigned_staff_id: null,
+      })
+      .eq("id", item.id)
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+    if (itemUpdateError) throw itemUpdateError;
+    if (!updatedItem) {
+      res.status(409).json({ success: false, message: "This service has started or changed. Refresh the queue and try again." });
+      return;
+    }
+
+    const { data: updatedEntry, error: durationError } = await supabase
+      .from("queue_entries")
+      .update({ estimated_duration: nextEntryDuration })
+      .eq("id", entry.id)
+      .eq("estimated_duration", entry.estimated_duration)
+      .in("status", ["waiting", "in_service"])
+      .select("id")
+      .maybeSingle();
+    if (durationError || !updatedEntry) {
+      const { error: rollbackError } = await supabase.from("queue_entry_services")
+        .update({
+          service_id: item.service_id,
+          price: item.price,
+          estimated_duration: item.estimated_duration,
+          station_id: item.station_id,
+          station_reserved_until: item.station_reserved_until,
+          station_queue_position: item.station_queue_position,
+          customer_service_seat_id: item.customer_service_seat_id,
+          assigned_staff_id: item.assigned_staff_id,
+        })
+        .eq("id", item.id)
+        .eq("status", "pending");
+      if (rollbackError) throw new Error(`Queue duration update failed and service rollback failed: ${rollbackError.message}`);
+      if (durationError) throw durationError;
+      res.status(409).json({ success: false, message: "The visit changed while updating. Refresh the queue and try again." });
+      return;
+    }
+
+    const [{ error: workstationError }, { error: seatError }] = await Promise.all([
+      supabase.rpc("assign_workstations_for_entry", { p_entry_id: entry.id }),
+      supabase.rpc("assign_customer_service_seats_for_entry", { p_entry_id: entry.id }),
+    ]);
+    if (workstationError || seatError) {
+      const [{ error: itemRollbackError }, { error: entryRollbackError }] = await Promise.all([
+        supabase.from("queue_entry_services")
+          .update({
+            service_id: item.service_id,
+            price: item.price,
+            estimated_duration: item.estimated_duration,
+            station_id: item.station_id,
+            station_reserved_until: item.station_reserved_until,
+            station_queue_position: item.station_queue_position,
+            customer_service_seat_id: item.customer_service_seat_id,
+            assigned_staff_id: item.assigned_staff_id,
+          })
+          .eq("id", item.id),
+        supabase.from("queue_entries")
+          .update({ estimated_duration: entry.estimated_duration })
+          .eq("id", entry.id)
+          .eq("estimated_duration", nextEntryDuration),
+      ]);
+      if (itemRollbackError || entryRollbackError) {
+        throw new Error(`Service assignment failed and rollback was incomplete: ${itemRollbackError?.message ?? entryRollbackError?.message}`);
+      }
+      throw workstationError ?? seatError;
+    }
+
+    const wait = await estimateEntryWait(entry.id, config.crowdThreshold);
+    await writeAuditLog({
+      actorId: user.id,
+      action: "queue.service_changed",
+      entityType: "queue_entry",
+      entityId: entry.id,
+      summary: `Changed a queued service for ${entry.customer_name}.`,
+      metadata: { queueEntryServiceId: item.id, previousServiceId: item.service_id, serviceId: service.id },
+    });
+    res.json({ success: true, wait });
+  } catch (error) {
+    console.error("Queue service change failed:", error);
+    res.status(500).json({ success: false, message: error instanceof Error ? error.message : "Unable to change queued service." });
+  }
+});
+
+queueRouter.get("/:entryId/wait", async (req, res) => {
+  const { entryId } = req.params;
+  if (!UUID_PATTERN.test(entryId)) {
+    res.status(400).json({ success: false, message: "Invalid queue entry." });
+    return;
+  }
+  try {
+    const wait = await estimateEntryWait(entryId, config.crowdThreshold);
+    res.json({ success: true, wait });
+  } catch (error) {
+    console.error("Queue wait estimate failed:", error);
+    res.status(500).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Unable to estimate queue wait.",
+    });
+  }
+});
+
 queueRouter.get("/:entryId", async (req, res) => {
   const { entryId } = req.params;
   if (!UUID_PATTERN.test(entryId)) {
@@ -2090,7 +2337,6 @@ queueRouter.get("/:entryId", async (req, res) => {
     peopleAhead = count ?? 0;
   }
 
-  const wait = await estimateEntryWait(entryId, config.crowdThreshold);
   const { data: transaction, error: transactionError } = await supabase
     .from("pos_transactions")
     .select("subtotal, discount_amount, total_amount, payment_method, created_at, status, pos_transaction_items ( service_name, quantity )")
@@ -2118,7 +2364,7 @@ queueRouter.get("/:entryId", async (req, res) => {
       receiptUnavailable: Boolean(transactionError),
     },
     peopleAhead,
-    wait,
+    wait: { ewtMinutes: null, source: "pending" },
   });
 });
 

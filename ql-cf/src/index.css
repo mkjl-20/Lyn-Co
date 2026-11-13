@@ -34,11 +34,11 @@
   --app-accent-soft: #ededed;
   --app-shadow: 0 12px 32px rgb(0 0 0 / 7%);
   --app-page-background:
-    linear-gradient(90deg, #f7f7f7 0%, #c8c8c8 52%, #777777 100%),
-    linear-gradient(270deg, #f7f7f7 0%, #c8c8c8 52%, #777777 100%),
-    var(--app-canvas);
-  --app-page-background-size: 100% 50%, 100% 50%, 100% 100%;
-  --app-page-background-position: top, bottom, center;
+    radial-gradient(ellipse 78% 110% at 0% 0%, color-mix(in srgb, var(--app-surface) 86%, transparent) 0%, transparent 74%),
+    radial-gradient(ellipse 88% 120% at 100% 100%, color-mix(in srgb, var(--app-accent) 12%, transparent) 0%, transparent 72%),
+    linear-gradient(135deg, var(--app-canvas) 0%, color-mix(in srgb, var(--app-canvas) 92%, var(--app-accent) 8%) 100%);
+  --app-page-background-size: 100% 100%, 100% 100%, 100% 100%;
+  --app-page-background-position: left top, right bottom, center;
 }
 
 .lynq-app {
@@ -64,11 +64,11 @@
   --app-accent-soft: #242529;
   --app-shadow: 0 12px 32px rgb(0 0 0 / 28%);
   --app-page-background:
-    linear-gradient(90deg, #292929 0%, #111111 52%, #030303 100%),
-    linear-gradient(270deg, #292929 0%, #111111 52%, #030303 100%),
-    #030303;
-  --app-page-background-size: 100% 50%, 100% 50%, 100% 100%;
-  --app-page-background-position: top, bottom, center;
+    radial-gradient(ellipse 78% 110% at 0% 0%, color-mix(in srgb, var(--app-surface) 48%, transparent) 0%, transparent 74%),
+    radial-gradient(ellipse 88% 120% at 100% 100%, color-mix(in srgb, var(--app-accent) 14%, transparent) 0%, transparent 72%),
+    linear-gradient(135deg, var(--app-canvas) 0%, #030303 100%);
+  --app-page-background-size: 100% 100%, 100% 100%, 100% 100%;
+  --app-page-background-position: left top, right bottom, center;
   --color-ink: #e4e4e7;
   --color-porcelain: #191a1d;
   --color-sage: #606168;
@@ -235,6 +235,12 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 30%, transparent);
 }
 
+.phone-number-input:focus {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
 .form-field-error,
 [aria-invalid="true"] {
   border-color: var(--color-danger) !important;
@@ -260,6 +266,11 @@
   --dashboard-text: var(--color-ink);
   --dashboard-muted: var(--app-ink-muted);
   background-color: var(--dashboard-canvas);
+  background-image: var(--app-page-background);
+  background-size: var(--app-page-background-size);
+  background-position: var(--app-page-background-position);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
 }
 
 .admin-dashboard-tile {
@@ -316,11 +327,96 @@ body {
   pointer-events: none;
 }
 
-.customer-hero {
-  background-color: var(--app-accent-soft);
-  background-image:
-    radial-gradient(ellipse 54% 120% at 85% 40%, rgb(255 255 255 / 68%) 0%, transparent 72%),
-    linear-gradient(112deg, var(--app-accent-soft) 0%, color-mix(in srgb, var(--app-accent-soft) 85%, var(--app-canvas)) 54%, color-mix(in srgb, var(--app-accent-soft) 82%, var(--app-accent) 18%) 100%);
+.customer-banner-slide {
+  position: relative;
+  overflow: hidden;
+  background: #505050;
+  color: #fff;
+}
+
+.customer-banner-slide.has-photo {
+  background: #080808;
+}
+
+.customer-banner-background {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+.customer-banner-copy {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  background: transparent;
+}
+
+.customer-banner-title {
+  text-wrap: balance;
+}
+
+.customer-banner-action {
+  border: 1px solid rgb(255 255 255 / 80%);
+  border-radius: 9999px;
+  background: #fff;
+  color: #171717;
+}
+
+.customer-banner-action:hover {
+  background: #e8e5e0;
+}
+
+.customer-banner-slide.has-photo .customer-banner-copy {
+  margin-left: auto;
+  width: 58%;
+  background: linear-gradient(90deg, transparent 0%, rgb(0 0 0 / 72%) 24%, rgb(0 0 0 / 88%) 100%);
+}
+
+.customer-banner-arrow {
+  position: absolute;
+  z-index: 10;
+  top: 50%;
+  display: flex;
+  height: 2.75rem;
+  width: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  background: rgb(0 0 0 / 48%);
+  color: #fff;
+  transition: background-color 150ms ease;
+}
+
+.customer-banner-arrow:hover {
+  background: rgb(0 0 0 / 75%);
+}
+
+.customer-banner-dots {
+  position: absolute;
+  z-index: 10;
+  bottom: 1rem;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transform: translateX(-50%);
+}
+
+@media (max-width: 767px) {
+  .customer-banner-slide.has-photo .customer-banner-copy {
+    width: 100%;
+    background: linear-gradient(0deg, rgb(0 0 0 / 90%) 0%, rgb(0 0 0 / 70%) 48%, transparent 100%);
+  }
+
+  .customer-banner-arrow {
+    top: 5.5rem;
+    height: 2.5rem;
+    width: 2.5rem;
+  }
 }
 
 .dashboard-surface {
@@ -480,13 +576,6 @@ textarea:focus {
   text-transform: uppercase;
 }
 
-.dashboard-metric-index {
-  color: color-mix(in srgb, var(--app-ink-muted) 65%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-}
-
 .dashboard-metric-value {
   margin-top: 1rem;
   color: var(--color-ink);
@@ -512,6 +601,42 @@ textarea:focus {
   color: var(--app-ink-muted);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+.analytics-workspace .dashboard-metric-card {
+  min-height: 5rem;
+  border-color: #e5e5e5;
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+}
+
+.analytics-workspace .dashboard-metric-label {
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+}
+
+.analytics-workspace .dashboard-metric-value {
+  margin-top: 0.5rem;
+  font-family: var(--font-sans);
+  font-size: 1.5rem;
+}
+
+.analytics-workspace .dashboard-metric-detail {
+  margin-top: 0.25rem;
+  font-size: 0.6875rem;
+}
+
+.analytics-workspace nav[aria-label="Analytics sections pagination"] {
+  padding: 0.375rem 0.75rem;
+}
+
+.analytics-workspace nav[aria-label="Analytics sections pagination"] button {
+  min-height: 2rem;
+  padding: 0.25rem 0.625rem;
+}
+
+.analytics-workspace nav[aria-label="Analytics sections pagination"] span {
+  min-width: 4.5rem;
 }
 
 .dashboard-skeleton-card {
@@ -573,17 +698,22 @@ textarea:focus {
 }
 
 .ui-button-primary {
-  background-color: var(--color-success);
+  background-color: #000;
   color: #fff;
 }
 
 .ui-button-primary:hover:not(:disabled),
 .dashboard-primary-action:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--color-success) 86%, #000);
+  background-color: #4b5563 !important;
+}
+
+.ui-button-primary:active:not(:disabled),
+.dashboard-primary-action:active:not(:disabled) {
+  background-color: #6b7280 !important;
 }
 
 .dashboard-primary-action {
-  background-color: var(--color-success) !important;
+  background-color: #000 !important;
   color: #fff !important;
   transition: background-color 150ms ease;
 }
@@ -705,6 +835,7 @@ textarea:focus {
   .admin-responsive-table td[colspan]::before {
     content: none;
   }
+
 }
 
 .password-visibility-control:hover {
@@ -739,6 +870,14 @@ textarea:focus {
   border-radius: 1rem;
   background-color: var(--app-surface);
   padding: 0.875rem;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 4%);
+}
+
+.customer-booking-form > div > .customer-details-card {
+  border: 1px solid var(--app-border);
+  border-radius: 1rem;
+  background-color: var(--app-surface);
+  padding: 1.25rem;
   box-shadow: 0 6px 20px rgb(0 0 0 / 4%);
 }
 

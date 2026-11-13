@@ -1,6 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildWhatIfScenario, summarizeServiceDurations } from "./forecastAnalytics.js";
+import {
+  aggregateHourlyDemand,
+  summarizeQueueWaitAccuracy,
+  summarizeServiceDurations,
+} from "./forecastAnalytics.js";
+
+test("fills missing hourly arrivals with zero and groups timestamps in Manila time", () => {
+  const hourly = aggregateHourlyDemand([
+    { created_at: "2026-01-01T01:00:00.000Z" },
+    { created_at: "2026-01-02T01:00:00.000Z" },
+  ], new Date("2026-01-02T04:00:00.000Z"), 2, 2);
+
+  assert.equal(hourly[9].movingAverage, 1);
+  assert.equal(hourly[9].average, 1);
+  assert.equal(hourly[10].movingAverage, 0);
+  assert.equal(hourly[10].average, 0);
+});
+
+test("matches stored wait predictions to completed waits and counts linked no-shows", () => {
+  const accuracy = summarizeQueueWaitAccuracy([
+    { status: "completed", predictedWaitMinutes: 20, actualWaitMinutes: 30 },
+    { status: "completed", predictedWaitMinutes: 45, actualWaitMinutes: 15 },
+    { status: "no_show", predictedWaitMinutes: 10, actualWaitMinutes: null },
+    { status: "completed", predictedWaitMinutes: null, actualWaitMinutes: 25 },
+    { status: "completed", predictedWaitMinutes: 60, actualWaitMinutes: 800 },
+  ]);
+
+  assert.deepEqual(accuracy, {
+    sampleCount: 2,
+    linkedOutcomeCount: 4,
+    waitMeanAbsoluteErrorMinutes: 20,
+    averageActualWaitMinutes: 22.5,
+    noShowCount: 1,
+    completedCount: 4,
+  });
+});
 
 test("summarizes actual versus estimated durations per service", () => {
   const report = summarizeServiceDurations([
@@ -31,31 +66,4 @@ test("summarizes actual versus estimated durations per service", () => {
       meanAbsoluteErrorMinutes: 10,
     },
   ]);
-});
-
-test("compares baseline and what-if staffing, demand, service duration, and wait", () => {
-  const result = buildWhatIfScenario({
-    staffCount: 4,
-    activeStaff: 2,
-    demandMultiplier: 1.5,
-    eventMultiplier: 1.2,
-    averageServiceMinutes: 30,
-    serviceDurationMultiplier: 1.5,
-    projectedWaitMinutes: 20,
-    hourly: [{ hour: 10, forecastCustomers: 4 }],
-  });
-
-  assert.equal(result.baselineProjectedWaitMinutes, 24);
-  assert.equal(result.projectedWaitMinutes, 27);
-  assert.equal(result.waitChangeMinutes, 3);
-  assert.equal(result.scenarioAverageServiceMinutes, 45);
-  assert.deepEqual(result.hourly[0], {
-    hour: 10,
-    baselineForecastCustomers: 4.8,
-    forecastCustomers: 7.2,
-    baselineRecommendedStaff: 3,
-    baselineStaffingGap: 1,
-    recommendedStaff: 6,
-    staffingGap: 2,
-  });
 });

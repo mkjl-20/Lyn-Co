@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { trainForecastModel, type ForecastTrainingRow } from "./forecastTraining.js";
+import {
+  isMlrModel,
+  predictForecastWait,
+  trainForecastModel,
+  type ForecastTrainingRow,
+  type MlrModel,
+} from "./forecastTraining.js";
 
 function trainingRows(count: number): ForecastTrainingRow[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -33,4 +39,18 @@ test("trains and evaluates in chronological order with a moving-average warm-up"
 
 test("requires enough usable history after the moving-average warm-up", () => {
   assert.throws(() => trainForecastModel(trainingRows(34)), /Need at least 30 usable records/);
+});
+
+test("predicts with the trained feature order and neutralizes unavailable live features", () => {
+  const model: MlrModel = {
+    features: ["ma5", "hour_of_day"],
+    mean: [10, 12],
+    std: [2, 4],
+    coef: [15, 2, 3],
+  };
+
+  assert.equal(isMlrModel(model), true);
+  assert.equal(predictForecastWait(model, { ma5: 12 }), 17);
+  assert.equal(predictForecastWait(model, { ma5: 8, hour_of_day: 16 }), 16);
+  assert.equal(isMlrModel({ ...model, coef: [15, 2] }), false);
 });
