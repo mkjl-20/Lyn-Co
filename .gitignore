@@ -35,3 +35,9 @@ ps-sb/api/dist
 *.njsproj
 *.sln
 *.sw?
+
+# Ignore migrations folders
+migration/
+migrations/
+**/migration/
+**/migrations/
