@@ -13,6 +13,12 @@ dist-ssr
 *.local
 *.tsbuildinfo
 
+# Environment variables
+.env
+.env.*
+!.env.example
+env.local
+
 # Per-package build output
 ql-cf/dist
 ql-cf/node_modules
